@@ -392,9 +392,17 @@ $('partnerEdit').addEventListener('submit', async (event) => {
   try {
     const data = Object.fromEntries(new FormData(event.target).entries());
     data.estimated_rooms = data.estimated_rooms === '' ? null : Number(data.estimated_rooms);
+    for (const [key, value] of Object.entries(data)) {
+      if (typeof value === 'string') data[key] = value.trim();
+    }
     if (data.status === 'parceiro' && selectedPartner.status !== 'parceiro' &&
         !window.confirm('A parceria foi confirmada com este estabelecimento?')) return;
-    await api(`partners/${encodeURIComponent(selectedPartner.id)}`, {method: 'PATCH', body: data});
+    const changes = Object.fromEntries(Object.entries(data).filter(([key, value]) => value !== selectedPartner[key]));
+    if (!Object.keys(changes).length) {
+      notice('Nenhuma alteração para salvar.');
+      return;
+    }
+    await api(`partners/${encodeURIComponent(selectedPartner.id)}`, {method: 'PATCH', body: changes});
     event.target.hidden = true;
     selectedPartner = null;
     await refreshPartners();

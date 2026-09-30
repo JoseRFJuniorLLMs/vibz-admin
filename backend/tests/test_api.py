@@ -103,8 +103,11 @@ class ApiTests(unittest.TestCase):
         updated = self.client.patch(f"/api/partners/{identifier}", json={"status": "interessado", "manager": "Ana"}, headers={"X-CSRF-Token": csrf})
         self.assertEqual(updated.status_code, 200, updated.text)
         self.assertEqual(updated.json()["status"], "interessado")
+        priority_only = self.client.patch(f"/api/partners/{identifier}", json={"priority": "alta"}, headers={"X-CSRF-Token": csrf})
+        self.assertEqual(priority_only.json()["manager"], "Ana")
         self.assertEqual(self.client.get("/api/partners?status=parceiro").json()["total"], 0)
         self.assertEqual(self.client.get("/api/partners?status=interessado").json()["total"], 1)
+        self.assertEqual(self.client.get("/api/partners?q=%25").json()["total"], 0)
         self.assertEqual(self.client.get("/api/partners?page=0").status_code, 422)
 
     def test_paged_cards_keep_origin_options_complete(self):
