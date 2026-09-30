@@ -121,6 +121,28 @@ class ApiTests(unittest.TestCase):
         last = self.client.get("/api/cards?page=2&page_size=20").json()
         self.assertEqual((last["total"], last["pages"], len(last["items"])), (21, 2, 1))
 
+    def test_prospects_appear_as_origin_choices_and_register_on_issue(self):
+        self.store.seed_partners(entries())
+        csrf = self.login()
+        options = self.client.get("/api/origins/options").json()
+        self.assertEqual(len(options), 130)
+        self.assertTrue(all(option["source"] == "prospect" for option in options))
+        self.assertEqual(self.client.get("/api/origins").json()["total"], 0)
+        chosen = next(option for option in options if option["name"] == "Pousada Bucaneiro")
+        invalid = self.client.post("/api/cards", json={"origin_id": chosen["id"], "count": 101}, headers={"X-CSRF-Token": csrf})
+        self.assertEqual(invalid.status_code, 422)
+        self.assertEqual(self.client.get("/api/origins").json()["total"], 0)
+        issued = self.client.post("/api/cards", json={"origin_id": chosen["id"], "count": 2}, headers={"X-CSRF-Token": csrf})
+        self.assertEqual(issued.status_code, 201, issued.text)
+        self.assertEqual(issued.json()[0]["origin_name"], "Pousada Bucaneiro")
+        self.assertEqual(self.client.get("/api/origins").json()["total"], 1)
+        refreshed = self.client.get("/api/origins/options").json()
+        self.assertEqual(len(refreshed), 130)
+        self.assertEqual(next(option for option in refreshed if option["name"] == "Pousada Bucaneiro")["source"], "origin")
+        again = self.client.post("/api/cards", json={"origin_id": chosen["id"], "count": 1}, headers={"X-CSRF-Token": csrf})
+        self.assertEqual(again.status_code, 201, again.text)
+        self.assertEqual(self.client.get("/api/origins").json()["total"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

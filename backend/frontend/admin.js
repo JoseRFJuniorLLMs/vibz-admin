@@ -89,16 +89,29 @@ async function refreshOrigins() {
   origins = options;
   const select = $('issueOrigin');
   const selected = select.value;
-  select.replaceChildren(node('option', '', 'Selecione uma origem'));
-  select.firstChild.value = '';
+  const placeholder = node('option', '', 'Selecione uma origem');
+  placeholder.value = '';
+  const registeredGroup = node('optgroup');
+  registeredGroup.label = 'Origens cadastradas';
+  const prospectGroup = node('optgroup');
+  prospectGroup.label = 'Lista comercial — a confirmar';
   const list = $('originList');
   list.replaceChildren();
   for (const origin of origins) {
-    const option = node('option', '', origin.name);
+    const label = origin.source === 'prospect'
+      ? `${origin.name} — ${partnerStatusLabels[origin.status] || 'A confirmar'}`
+      : origin.name;
+    const option = node('option', '', label);
     option.value = origin.id;
-    select.append(option);
+    (origin.source === 'prospect' ? prospectGroup : registeredGroup).append(option);
   }
+  select.replaceChildren(placeholder);
+  if (registeredGroup.children.length) select.append(registeredGroup);
+  if (prospectGroup.children.length) select.append(prospectGroup);
   select.value = origins.some((origin) => origin.id === selected) ? selected : '';
+  $('originHelp').textContent = prospectGroup.children.length
+    ? `${prospectGroup.children.length} locais da lista comercial disponíveis. Confirme a distribuição com o local antes de emitir; a origem será cadastrada na primeira emissão.`
+    : 'Cadastre uma origem na aba Origens antes de emitir cartões.';
   for (const origin of result.items) {
     const card = node('div', 'origin-card');
     card.append(node('strong', '', origin.name), node('small', '', origin.category));
@@ -415,6 +428,9 @@ $('issueForm').addEventListener('submit', async (event) => {
   const button = event.target.querySelector('button[type="submit"]');
   button.disabled = true;
   try {
+    const chosen = origins.find((origin) => origin.id === $('issueOrigin').value);
+    if (chosen?.source === 'prospect' && chosen.status !== 'parceiro' &&
+        !window.confirm(`${chosen.name} ainda não está marcado como parceiro. A distribuição foi combinada com esse local?`)) return;
     const cards = await api('cards', {method: 'POST', body: {
       origin_id: $('issueOrigin').value,
       count: Number($('issueCount').value),

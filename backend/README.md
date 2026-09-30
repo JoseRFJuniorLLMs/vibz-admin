@@ -34,7 +34,7 @@ No servidor, use `VIBZ_DB_PATH=/var/lib/vibz-admin/cards.sqlite3`. Preserve tamb
 
 O QR físico aponta para `VIBZ_PUBLIC_BASE_URL/<token>`; mantenha esse endereço estável depois de imprimir cartões. A URL de QR atual usa `35.247.217.66.nip.io/vibz-admin/p`. O painel também atende `https://35.247.217.66/vibz-admin/` com certificado de IP separado. Esse certificado tem validade curta e é renovado por `vibz-ip-cert-renew.timer` duas vezes ao dia; acompanhe o timer e a expiração.
 
-Para incluir a base inicial de prospecção, execute `VIBZ_DB_PATH=/var/lib/vibz-admin/cards.sqlite3 .venv/bin/python -m backend.seed_partners` no diretório da aplicação. O comando é idempotente e não substitui contatos ou status editados. Os nomes entram como `não contatado`; endereço, telefone e demais contatos ficam vazios até confirmação. Um prospecto só se torna `parceiro` após atualização explícita por administrador. As origens de cartão continuam separadas e só devem ser cadastradas quando houver ponto de distribuição confirmado.
+Para incluir a base inicial de prospecção, execute `VIBZ_DB_PATH=/var/lib/vibz-admin/cards.sqlite3 .venv/bin/python -m backend.seed_partners` no diretório da aplicação. O comando é idempotente e não substitui contatos ou status editados. Os nomes entram como `não contatado`; endereço, telefone e demais contatos ficam vazios até confirmação. Um prospecto só se torna `parceiro` após atualização explícita por administrador. Os locais comerciais aparecem no seletor de emissão com seu status. A origem de cartão é cadastrada automaticamente na primeira emissão para aquele local; a interface pede confirmação de distribuição quando a parceria ainda não estiver marcada como confirmada.
 
 O login limita tentativas por IP durante dez minutos. Sessões duram oito horas. Roles: `admin` emite cartões e cria origens; `operator` consulta e resgata. A equipe deve guardar as credenciais individualmente, sair ao encerrar o turno e fazer backup periódico do banco.
 
@@ -46,7 +46,7 @@ O login limita tentativas por IP durante dez minutos. Sessões duram oito horas.
 | `GET /api/session` | equipe | restaura sessão e token CSRF |
 | `POST /api/logout` | equipe | revoga sessão |
 | `GET/POST /api/origins` | equipe/admin | lista paginada/cadastra origens |
-| `GET /api/origins/options` | equipe | origens ativas para seleção de emissão |
+| `GET /api/origins/options` | equipe | origens ativas e locais comerciais para seleção de emissão |
 | `GET/POST /api/cards` | equipe/admin | lista paginada/emite cartões |
 | `GET /api/partners` | equipe | busca e filtra base comercial paginada |
 | `PATCH /api/partners/{id}` | admin | atualiza contatos, prioridade e status |

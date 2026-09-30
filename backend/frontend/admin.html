@@ -55,11 +55,12 @@
       <section id="issueTab" class="tab-panel" hidden>
         <div class="panel-head"><div><h2>Gerar cartões sequenciais</h2><p>Cada cartão recebe número próprio e QR impossível de adivinhar.</p></div></div>
         <form id="issueForm" class="panel form-grid admin-only">
-          <label>Origem<select id="issueOrigin" required><option value="">Selecione uma origem</option></select></label>
+          <label>Origem<select id="issueOrigin" aria-describedby="originHelp" required><option value="">Selecione uma origem</option></select></label>
           <label>Quantidade (1 a 100)<input id="issueCount" type="number" min="1" max="100" value="1" required></label>
           <label>Válido até (opcional)<input id="issueExpiry" type="date"></label>
           <button type="submit" class="primary">Gerar lote</button>
         </form>
+        <p id="originHelp" class="hint">A lista inclui estabelecimentos ainda não contatados. Confirme a distribuição com o local antes de emitir cartões; a origem será cadastrada na primeira emissão.</p>
         <div id="issueOperatorNote" class="panel" hidden>Somente administradores podem gerar cartões.</div>
         <div id="issuedActions" class="button-row" hidden><button id="printCards" type="button">Imprimir cartões</button><span id="issuedCount"></span></div>
         <div id="issuedCards" class="print-sheet"></div>

@@ -170,9 +170,16 @@ class Store:
 
     def origin_options(self) -> list[dict]:
         with closing(self._connect()) as db:
-            return [dict(row) for row in db.execute(
-                "SELECT id,name,category FROM origins WHERE active=1 ORDER BY name COLLATE NOCASE, id"
+            registered = [dict(row) | {"source": "origin", "status": None} for row in db.execute(
+                "SELECT id,name,category FROM origins WHERE active=1"
             )]
+            prospects = [dict(row) | {"source": "prospect"} for row in db.execute(
+                """SELECT p.id,p.name,p.category,p.status FROM partners p
+                   WHERE NOT EXISTS (
+                     SELECT 1 FROM origins o WHERE o.id=p.id OR o.name=p.name COLLATE NOCASE
+                   )"""
+            )]
+        return sorted(registered + prospects, key=lambda item: (item["name"].casefold(), item["id"]))
 
     @staticmethod
     def _page(items: list[dict], total: int, page: int, page_size: int) -> dict:
@@ -191,9 +198,25 @@ class Store:
         db = self._connect()
         try:
             db.execute("BEGIN IMMEDIATE")
-            origin = db.execute("SELECT * FROM origins WHERE id=? AND active=1", (origin_id,)).fetchone()
-            if origin is None:
+            origin = db.execute("SELECT * FROM origins WHERE id=?", (origin_id,)).fetchone()
+            if origin is not None and not origin["active"]:
                 raise StoreError("Origem não encontrada ou inativa", 404)
+            if origin is None:
+                partner = db.execute("SELECT * FROM partners WHERE id=?", (origin_id,)).fetchone()
+                if partner is None:
+                    raise StoreError("Origem não encontrada ou inativa", 404)
+                origin = db.execute("SELECT * FROM origins WHERE name=? COLLATE NOCASE", (partner["name"],)).fetchone()
+                if origin is not None and not origin["active"]:
+                    raise StoreError("Origem não encontrada ou inativa", 404)
+                if origin is None:
+                    now = utc_now()
+                    category = {"hospedagem": "Hospedagem", "gastronomia": "Gastronomia", "praia": "Praia"}[partner["category"]]
+                    db.execute(
+                        """INSERT INTO origins(id,name,category,active,created_at,created_by)
+                           VALUES (?,?,?,1,?,?)""",
+                        (partner["id"], partner["name"], category, now, uid),
+                    )
+                    origin = db.execute("SELECT * FROM origins WHERE id=?", (partner["id"],)).fetchone()
             issued = []
             now = utc_now()
             for _ in range(count):
@@ -201,7 +224,7 @@ class Store:
                 cursor = db.execute(
                     """INSERT INTO cards(token,origin_id,origin_name,issued_at,issued_by,valid_until)
                        VALUES (?,?,?,?,?,?)""",
-                    (token, origin_id, origin["name"], now, uid, valid_until),
+                    (token, origin["id"], origin["name"], now, uid, valid_until),
                 )
                 issued.append(self._card(db.execute("SELECT * FROM cards WHERE id=?", (cursor.lastrowid,)).fetchone()))
             db.commit()
