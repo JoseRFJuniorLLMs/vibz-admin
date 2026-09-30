@@ -35,7 +35,11 @@ class ApiTests(unittest.TestCase):
         root = self.client.get("/", follow_redirects=False)
         self.assertEqual(root.status_code, 307)
         self.assertEqual(root.headers["location"], "admin/")
-        self.assertEqual(self.client.get("/admin/").status_code, 200)
+        admin_page = self.client.get("/admin/")
+        self.assertEqual(admin_page.status_code, 200)
+        self.assertEqual(admin_page.headers["cache-control"], "no-store")
+        self.assertIn("admin.js?v=20260930-v5-reports", admin_page.text)
+        self.assertEqual(self.client.get("/static/admin.js").headers["cache-control"], "no-store")
 
     def test_login_csrf_roles_and_redeem(self):
         self.assertEqual(self.client.get("/api/cards").status_code, 401)
@@ -88,6 +92,26 @@ class ApiTests(unittest.TestCase):
         locked = self.client.post("/api/login", json={"username": "vibz-admin", "password": "A-strong-secret-123"})
         self.assertEqual(locked.status_code, 429)
 
+    def test_only_admin_can_list_and_create_users(self):
+        self.assertEqual(self.client.get("/api/users").status_code, 401)
+        operator_csrf = self.login("portaria", "Another-secret-456")
+        self.assertEqual(self.client.get("/api/users").status_code, 403)
+        data = {"username": "nova.operadora", "password": "A-long-password-789", "role": "operator"}
+        self.assertEqual(self.client.post("/api/users", json=data, headers={"X-CSRF-Token": operator_csrf}).status_code, 403)
+        admin_csrf = self.login()
+        listing = self.client.get("/api/users?page=1&page_size=20")
+        self.assertEqual(listing.json()["total"], 2)
+        self.assertNotIn("password_hash", listing.text)
+        self.assertEqual(self.client.post("/api/users", json=data).status_code, 403)
+        self.assertEqual(self.client.post("/api/users", json={**data, "password": "short"}, headers={"X-CSRF-Token": admin_csrf}).status_code, 422)
+        created = self.client.post("/api/users", json=data, headers={"X-CSRF-Token": admin_csrf})
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(created.json()["role"], "operator")
+        self.assertNotIn("password", created.text)
+        self.assertEqual(self.client.get("/api/users").json()["total"], 3)
+        self.assertEqual(self.client.post("/api/users", json=data, headers={"X-CSRF-Token": admin_csrf}).status_code, 409)
+        self.assertEqual(self.client.post("/api/login", json={"username": "nova.operadora", "password": data["password"]}).status_code, 200)
+
     def test_partner_listing_and_admin_updates(self):
         self.store.seed_partners(entries())
         self.assertEqual(self.client.get("/api/partners").status_code, 401)
@@ -132,6 +156,9 @@ class ApiTests(unittest.TestCase):
         invalid = self.client.post("/api/cards", json={"origin_id": chosen["id"], "count": 101}, headers={"X-CSRF-Token": csrf})
         self.assertEqual(invalid.status_code, 422)
         self.assertEqual(self.client.get("/api/origins").json()["total"], 0)
+        uncontracted = self.client.post("/api/cards", json={"origin_id": chosen["id"], "count": 2}, headers={"X-CSRF-Token": csrf})
+        self.assertEqual(uncontracted.status_code, 400)
+        self.store.update_partner(chosen["id"], {"status": "parceiro"})
         issued = self.client.post("/api/cards", json={"origin_id": chosen["id"], "count": 2}, headers={"X-CSRF-Token": csrf})
         self.assertEqual(issued.status_code, 201, issued.text)
         self.assertEqual(issued.json()[0]["origin_name"], "Pousada Bucaneiro")
@@ -142,6 +169,36 @@ class ApiTests(unittest.TestCase):
         again = self.client.post("/api/cards", json={"origin_id": chosen["id"], "count": 1}, headers={"X-CSRF-Token": csrf})
         self.assertEqual(again.status_code, 201, again.text)
         self.assertEqual(self.client.get("/api/origins").json()["total"], 1)
+
+    def test_admissions_report_and_scanned_filter(self):
+        csrf = self.login()
+        origin = self.store.create_origin("Pousada Tartaruga", "Pousada", "admin")
+        issued = self.store.issue(origin["id"], 5, None, "admin")
+        token = issued[0]["token"]
+
+        rep = self.client.get("/api/reports/admissions?days=30")
+        self.assertEqual(rep.status_code, 200)
+        data = rep.json()
+        self.assertIn("summary", data)
+        self.assertEqual(data["summary"]["total_issued"], 5)
+        self.assertEqual(data["summary"]["total_admissions"], 0)
+        self.assertEqual(data["summary"]["total_unused"], 5)
+
+        scanned = self.client.get("/api/cards?status=redeemed")
+        self.assertEqual(scanned.status_code, 200)
+        self.assertEqual(scanned.json()["total"], 0)
+
+        redeem_res = self.client.post(f"/api/cards/{token}/redeem", json={"wristband": "P-01"}, headers={"X-CSRF-Token": csrf})
+        self.assertEqual(redeem_res.status_code, 200)
+        self.assertEqual(redeem_res.json()["status"], "redeemed")
+
+        scanned = self.client.get("/api/cards?status=redeemed")
+        self.assertEqual(scanned.json()["total"], 1)
+        self.assertEqual(scanned.json()["items"][0]["wristband"], "P-01")
+
+        rep_after = self.client.get("/api/reports/admissions?days=30")
+        self.assertEqual(rep_after.json()["summary"]["total_admissions"], 1)
+        self.assertEqual(rep_after.json()["summary"]["total_unused"], 4)
 
 
 if __name__ == "__main__":

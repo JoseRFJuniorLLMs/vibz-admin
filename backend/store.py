@@ -205,6 +205,13 @@ class Store:
                 partner = db.execute("SELECT * FROM partners WHERE id=?", (origin_id,)).fetchone()
                 if partner is None:
                     raise StoreError("Origem não encontrada ou inativa", 404)
+                # Regra de negócio: só parceiros confirmados recebem cartões
+                if partner["status"] != "parceiro":
+                    raise StoreError(
+                        f"'{partner['name']}' não é parceiro confirmado. "
+                        f"Altere o status para 'Parceiro confirmado' na aba Estabelecimentos antes de emitir cartões.",
+                        400,
+                    )
                 origin = db.execute("SELECT * FROM origins WHERE name=? COLLATE NOCASE", (partner["name"],)).fetchone()
                 if origin is not None and not origin["active"]:
                     raise StoreError("Origem não encontrada ou inativa", 404)
@@ -244,14 +251,23 @@ class Store:
             raise StoreError("Cartão não encontrado", 404)
         return self._card(row)
 
-    def list_cards(self, page: int = 1, page_size: int = 20, origin_id: str | None = None) -> dict:
+    def list_cards(self, page: int = 1, page_size: int = 20, origin_id: str | None = None, status: str | None = None) -> dict:
         with closing(self._connect()) as db:
+            clauses = []
+            params = []
             if origin_id:
-                total = db.execute("SELECT COUNT(*) FROM cards WHERE origin_id=?", (origin_id,)).fetchone()[0]
-                rows = db.execute("SELECT * FROM cards WHERE origin_id=? ORDER BY id DESC LIMIT ? OFFSET ?", (origin_id, page_size, (page - 1) * page_size))
-            else:
-                total = db.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
-                rows = db.execute("SELECT * FROM cards ORDER BY id DESC LIMIT ? OFFSET ?", (page_size, (page - 1) * page_size))
+                clauses.append("origin_id = ?")
+                params.append(origin_id)
+            if status:
+                clauses.append("status = ?")
+                params.append(status)
+
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            total = db.execute(f"SELECT COUNT(*) FROM cards {where}", tuple(params)).fetchone()[0]
+
+            order_by = "ORDER BY redeemed_at DESC, id DESC" if status == "redeemed" else "ORDER BY id DESC"
+            query = f"SELECT * FROM cards {where} {order_by} LIMIT ? OFFSET ?"
+            rows = db.execute(query, tuple(params) + (page_size, (page - 1) * page_size))
             items = [self._card(row) for row in rows]
         return self._page(items, total, page, page_size)
 
@@ -353,6 +369,16 @@ class Store:
         except sqlite3.IntegrityError as exc:
             raise StoreError("Usuário já existe", 409) from exc
 
+    def list_users(self, page: int = 1, page_size: int = 20) -> dict:
+        with closing(self._connect()) as db:
+            total = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            items = [dict(row) for row in db.execute(
+                """SELECT id,username,role,active,created_at FROM users
+                   ORDER BY username COLLATE NOCASE, id LIMIT ? OFFSET ?""",
+                (page_size, (page - 1) * page_size),
+            )]
+        return self._page(items, total, page, page_size)
+
     def get_user(self, username: str) -> dict | None:
         with closing(self._connect()) as db:
             row = db.execute(
@@ -422,3 +448,135 @@ class Store:
     def clear_login_failures(self, key: str) -> None:
         with closing(self._connect()) as db:
             db.execute("DELETE FROM login_limits WHERE key=?", (key,))
+
+    def report_admissions(self, days: int = 30, origin_id: str | None = None) -> dict:
+        with closing(self._connect()) as db:
+            db.row_factory = sqlite3.Row
+            origin_clause = "AND origin_id = ?" if origin_id else ""
+            origin_params = (origin_id,) if origin_id else ()
+
+            summary_query = f"""
+                SELECT
+                    COUNT(*) as total_issued,
+                    SUM(CASE WHEN status = 'redeemed' THEN 1 ELSE 0 END) as total_redeemed,
+                    SUM(CASE WHEN status = 'issued' THEN 1 ELSE 0 END) as total_unused,
+                    SUM(CASE WHEN substr(issued_at, 1, 10) = date('now') THEN 1 ELSE 0 END) as today_issued,
+                    SUM(CASE WHEN substr(redeemed_at, 1, 10) = date('now') THEN 1 ELSE 0 END) as today_redeemed,
+                    SUM(CASE WHEN substr(issued_at, 1, 10) = date('now') AND status = 'issued' THEN 1 ELSE 0 END) as today_unused
+                FROM cards
+                WHERE 1=1 {origin_clause}
+            """
+            s_row = db.execute(summary_query, origin_params).fetchone()
+
+            total_issued = (s_row["total_issued"] if s_row else 0) or 0
+            total_redeemed = (s_row["total_redeemed"] if s_row else 0) or 0
+            total_unused = (s_row["total_unused"] if s_row else 0) or 0
+            today_issued = (s_row["today_issued"] if s_row else 0) or 0
+            today_redeemed = (s_row["today_redeemed"] if s_row else 0) or 0
+            today_unused = (s_row["today_unused"] if s_row else 0) or 0
+
+            conv_rate = round((total_redeemed / total_issued) * 100, 1) if total_issued > 0 else 0.0
+            today_conv = round((today_redeemed / today_issued) * 100, 1) if today_issued > 0 else 0.0
+
+            days_param = f"-{max(1, min(days, 365))} days"
+
+            daily_issued_query = f"""
+                SELECT
+                    substr(issued_at, 1, 10) as day,
+                    COUNT(*) as issued,
+                    SUM(CASE WHEN status = 'redeemed' THEN 1 ELSE 0 END) as issued_used,
+                    SUM(CASE WHEN status = 'issued' THEN 1 ELSE 0 END) as issued_unused
+                FROM cards
+                WHERE substr(issued_at, 1, 10) >= date('now', ?) {origin_clause}
+                GROUP BY substr(issued_at, 1, 10)
+            """
+            daily_issued = {
+                r["day"]: dict(r)
+                for r in db.execute(daily_issued_query, (days_param, *origin_params)).fetchall()
+            }
+
+            daily_redeemed_query = f"""
+                SELECT
+                    substr(redeemed_at, 1, 10) as day,
+                    COUNT(*) as admissions
+                FROM cards
+                WHERE redeemed_at IS NOT NULL AND substr(redeemed_at, 1, 10) >= date('now', ?) {origin_clause}
+                GROUP BY substr(redeemed_at, 1, 10)
+            """
+            daily_redeemed = {
+                r["day"]: dict(r)
+                for r in db.execute(daily_redeemed_query, (days_param, *origin_params)).fetchall()
+            }
+
+            all_days = sorted(set(list(daily_issued.keys()) + list(daily_redeemed.keys())), reverse=True)
+            daily_stats = []
+            for d in all_days:
+                iss = daily_issued.get(d, {})
+                red = daily_redeemed.get(d, {})
+                c_issued = iss.get("issued", 0)
+                c_admissions = red.get("admissions", 0)
+                c_unused = iss.get("issued_unused", 0)
+                rate = round((c_admissions / c_issued) * 100, 1) if c_issued > 0 else (100.0 if c_admissions > 0 else 0.0)
+                daily_stats.append({
+                    "date": d,
+                    "issued": c_issued,
+                    "admissions": c_admissions,
+                    "unused": c_unused,
+                    "conversion_rate": rate,
+                })
+
+            partner_query = f"""
+                SELECT
+                    origin_id,
+                    origin_name,
+                    COUNT(*) as total_issued,
+                    SUM(CASE WHEN status = 'redeemed' THEN 1 ELSE 0 END) as total_admissions,
+                    SUM(CASE WHEN status = 'issued' THEN 1 ELSE 0 END) as total_unused
+                FROM cards
+                WHERE 1=1 {origin_clause}
+                GROUP BY origin_id, origin_name
+                ORDER BY total_issued DESC
+            """
+            partner_stats = []
+            for r in db.execute(partner_query, origin_params).fetchall():
+                p_issued = r["total_issued"] or 0
+                p_adm = r["total_admissions"] or 0
+                p_unused = r["total_unused"] or 0
+                p_rate = round((p_adm / p_issued) * 100, 1) if p_issued > 0 else 0.0
+                partner_stats.append({
+                    "origin_id": r["origin_id"],
+                    "origin_name": r["origin_name"],
+                    "issued": p_issued,
+                    "admissions": p_adm,
+                    "unused": p_unused,
+                    "conversion_rate": p_rate,
+                })
+
+            hourly_query = f"""
+                SELECT CAST(strftime('%H', redeemed_at) AS INTEGER) as hour, COUNT(*) as count
+                FROM cards
+                WHERE redeemed_at IS NOT NULL AND substr(redeemed_at, 1, 10) = date('now') {origin_clause}
+                GROUP BY hour
+                ORDER BY hour
+            """
+            hourly_counts = {
+                r["hour"]: r["count"]
+                for r in db.execute(hourly_query, origin_params).fetchall()
+            }
+            hourly_stats = [{"hour": h, "count": hourly_counts.get(h, 0)} for h in range(24)]
+
+            return {
+                "summary": {
+                    "total_issued": total_issued,
+                    "total_admissions": total_redeemed,
+                    "total_unused": total_unused,
+                    "conversion_rate": conv_rate,
+                    "today_issued": today_issued,
+                    "today_admissions": today_redeemed,
+                    "today_unused": today_unused,
+                    "today_conversion_rate": today_conv,
+                },
+                "daily": daily_stats,
+                "partners": partner_stats,
+                "hourly_today": hourly_stats,
+            }

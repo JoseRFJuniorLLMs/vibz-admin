@@ -6,6 +6,7 @@ import base64
 import hashlib
 import os
 import secrets
+import zipfile
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Literal
 
 import qrcode
 import qrcode.image.svg
+from PIL import Image, ImageDraw, ImageFont
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -50,6 +52,12 @@ class LoginInput(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+class NewUserInput(BaseModel):
+    username: str = Field(min_length=3, max_length=40)
+    password: str = Field(min_length=12, max_length=256)
+    role: Literal["admin", "operator"]
+
+
 class OriginInput(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     category: str = Field(min_length=2, max_length=60)
@@ -67,6 +75,10 @@ class LookupInput(BaseModel):
 
 class RedeemInput(BaseModel):
     wristband: str = Field(min_length=1, max_length=32)
+
+
+class ExportInput(BaseModel):
+    tokens: list[str] = Field(min_length=1, max_length=100)
 
 
 Category = Literal["hospedagem", "gastronomia", "praia"]
@@ -105,7 +117,7 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
             "img-src 'self' data: blob:; connect-src 'self'; media-src 'self' blob:; "
             "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
         )
-        if request.url.path.startswith("/api/") or request.url.path.startswith("/p/"):
+        if request.url.path.startswith(("/api/", "/p/", "/static/", "/admin/")):
             response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -128,6 +140,11 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
             raise HTTPException(403, "Proteção de sessão inválida")
         return staff
 
+    def admin_read(staff: Actor = Depends(actor)) -> Actor:
+        if staff.role != "admin":
+            raise HTTPException(403, "Ação permitida apenas ao administrador")
+        return staff
+
     def admin(staff: Actor = Depends(csrf_actor)) -> Actor:
         if staff.role != "admin":
             raise HTTPException(403, "Ação permitida apenas ao administrador")
@@ -142,6 +159,80 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
         )
         output = BytesIO()
         image.save(output)
+        return output.getvalue()
+
+    def make_card_image(card: dict) -> Image.Image:
+        bg_path = FRONTEND / "card-bg.jpg"
+        if bg_path.exists():
+            base = Image.open(bg_path).convert("RGBA")
+        else:
+            base = Image.new("RGBA", (1024, 619), "#0b0a10")
+
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=10,
+            border=1,
+        )
+        qr.add_data(f"{settings.public_base_url}/{card['token']}")
+        qr.make(fit=True)
+        qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGBA")
+        qr_img = qr_img.resize((122, 122), Image.Resampling.LANCZOS)
+        base.paste(qr_img, (830, 411))
+
+        draw = ImageDraw.Draw(base)
+        font_num = None
+        font_meta = None
+        font_small = None
+        font_candidates_mono = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+            "C:\\Windows\\Fonts\\consola.ttf",
+            "C:\\Windows\\Fonts\\arialbd.ttf",
+        ]
+        font_candidates_sans = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "C:\\Windows\\Fonts\\arialbd.ttf",
+            "C:\\Windows\\Fonts\\arial.ttf",
+        ]
+        for fp in font_candidates_mono:
+            if os.path.exists(fp):
+                try:
+                    font_num = ImageFont.truetype(fp, 20)
+                    break
+                except Exception:
+                    pass
+
+        for fp in font_candidates_sans:
+            if os.path.exists(fp):
+                try:
+                    font_meta = ImageFont.truetype(fp, 12)
+                    font_small = ImageFont.truetype(fp, 11)
+                    break
+                except Exception:
+                    pass
+
+        if font_num is None:
+            font_num = font_meta = font_small = ImageFont.load_default()
+
+        num = card.get("number", "VIBZ-000000")
+        origem = card.get("origin_name", "VIBZ TOURIST PASS")
+        validade = card.get("valid_until")
+
+        # Alinhamento harmônico à direita das barras diagonais neon (///)
+        draw.text((160, 542), num, fill="#ffffff", font=font_num)
+        draw.text((160, 568), str(origem)[:30], fill="#ff9e73", font=font_meta)
+        if validade:
+            draw.text((160, 586), f"VÁLIDO ATÉ {validade}", fill="#a8a0b0", font=font_small)
+        else:
+            draw.text((160, 586), "ENTRADA CORTESIA", fill="#a8a0b0", font=font_small)
+
+        return base.convert("RGB")
+
+    def card_png_bytes(card: dict) -> bytes:
+        img = make_card_image(card)
+        output = BytesIO()
+        img.save(output, format="PNG")
         return output.getvalue()
 
     def store_call(fn, *args, **kwargs):
@@ -184,6 +275,15 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
         store.delete_session(staff.session_hash)
         response.delete_cookie(COOKIE_NAME, path=settings.cookie_path)
 
+    @app.get("/api/users")
+    def users(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+              _staff: Actor = Depends(admin_read)):
+        return store.list_users(page, page_size)
+
+    @app.post("/api/users", status_code=201)
+    def create_user(data: NewUserInput, _staff: Actor = Depends(admin)):
+        return store_call(store.create_user, data.username, hash_password(data.password), data.role)
+
     @app.get("/api/origins")
     def origins(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
                 _staff: Actor = Depends(actor)):
@@ -199,8 +299,8 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
 
     @app.get("/api/cards")
     def cards(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
-              origin_id: str | None = None, _staff: Actor = Depends(actor)):
-        result = store.list_cards(page, page_size, origin_id)
+              origin_id: str | None = None, status: str | None = None, _staff: Actor = Depends(actor)):
+        result = store.list_cards(page, page_size, origin_id=origin_id, status=status)
         result["items"] = [card_response(card) for card in result["items"]]
         return result
 
@@ -213,23 +313,24 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
     @app.patch("/api/partners/{identifier}")
     def update_partner(identifier: str, data: PartnerUpdate, _staff: Actor = Depends(admin)):
         changes = data.model_dump(exclude_unset=True)
-        for key, value in changes.items():
-            if value is None and key != "estimated_rooms":
-                raise HTTPException(422, f"{key} não pode ser vazio")
-            if isinstance(value, str):
-                changes[key] = value.strip()
+        for key, value in list(changes.items()):
+            if key != "estimated_rooms":
+                changes[key] = (value or "").strip()
         return store_call(store.update_partner, identifier, changes)
 
     @app.post("/api/cards", status_code=201)
     def issue_cards(data: IssueInput, staff: Actor = Depends(admin)):
         issued = store_call(store.issue, data.origin_id, data.count, data.valid_until, str(staff.id))
-        return [
-            {
+        res = []
+        for card in issued:
+            png_data = card_png_bytes(card)
+            res.append({
                 **card_response(card),
-                "qr_data_url": "data:image/svg+xml;base64:" + base64.b64encode(qr_bytes(card["token"])).decode("ascii"),
-            }
-            for card in issued
-        ]
+                "qr_data_url": "data:image/svg+xml;base64," + base64.b64encode(qr_bytes(card["token"])).decode("ascii"),
+                "card_data_url": "data:image/png;base64," + base64.b64encode(png_data).decode("ascii"),
+                "card_image_url": f"cards/{card['token']}/card.png",
+            })
+        return res
 
     @app.post("/api/lookup")
     def lookup(data: LookupInput, _staff: Actor = Depends(actor)):
@@ -244,6 +345,132 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
     def qr_svg(token: str, _staff: Actor = Depends(actor)):
         card = store_call(store.find, token)
         return Response(qr_bytes(card["token"]), media_type="image/svg+xml")
+
+    @app.get("/api/cards/{token}/card.png")
+    def card_png(token: str, _staff: Actor = Depends(actor)):
+        card = store_call(store.find, token)
+        return Response(
+            card_png_bytes(card),
+            media_type="image/png",
+            headers={"Content-Disposition": f'inline; filename="{card["number"]}.png"'},
+        )
+
+    @app.post("/api/cards/export.zip")
+    def export_zip(data: ExportInput, _staff: Actor = Depends(actor)):
+        """Gera ZIP com imagens PNG completas de cada cartão, PDF unificado, SVG e CSV."""
+        valid_tokens = [t for t in data.tokens if TOKEN_RE.fullmatch(t)]
+        if not valid_tokens:
+            raise HTTPException(400, "Nenhum token válido informado")
+        buf = BytesIO()
+        csv_rows = ["Numero,Origem,Validade,Token,Link_Publico"]
+        bg_path = FRONTEND / "card-bg.jpg"
+        bg_bytes = bg_path.read_bytes() if bg_path.exists() else b""
+
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            cards_html_parts = []
+            pdf_images = []
+            for token in valid_tokens:
+                card = store_call(store.find, token)
+                num = card["number"]
+                origem = card.get("origin_name", "")
+                validade = card.get("valid_until") or "Sem validade"
+                public_link = f"{settings.public_base_url}/{token}"
+
+                # 1. Cartão completo montado em PNG (1024x619) de alta definição
+                card_img = make_card_image(card)
+                pdf_images.append(card_img)
+                png_buf = BytesIO()
+                card_img.save(png_buf, format="PNG")
+                card_png_data = png_buf.getvalue()
+                zf.writestr(f"{num}-CARTAO-VIP-PRONTO.png", card_png_data)
+                zf.writestr(f"cartoes-completos-png/{num}.png", card_png_data)
+
+                # 2. QR Code individual em SVG vetorial
+                svg_data = qr_bytes(token)
+                zf.writestr(f"qrcodes-svg/{num}.svg", svg_data)
+
+                csv_rows.append(f'"{num}","{origem}","{validade}","{token}","{public_link}"')
+                card_b64 = base64.b64encode(card_png_data).decode("ascii")
+                cards_html_parts.append(f"""
+                <div class="card-item">
+                  <img src="data:image/png;base64,{card_b64}" alt="{num}">
+                </div>""")
+
+            # 3. PDF de todos os cartões reunidos para bureau e impressão direta
+            if pdf_images:
+                pdf_buf = BytesIO()
+                pdf_images[0].save(pdf_buf, format="PDF", save_all=True, append_images=pdf_images[1:])
+                zf.writestr("TODOS-OS-CARTOES-IMPRESSAO.pdf", pdf_buf.getvalue())
+
+            if bg_bytes:
+                zf.writestr("matriz-opcional/arte-cartao-vip-matriz-sem-dados.jpg", bg_bytes)
+
+            zf.writestr("relacao-cartoes-lote.csv", "\ufeff" + "\n".join(csv_rows))
+            zf.writestr(
+                "especificacoes-grafica.txt",
+                "ESPECIFICAÇÕES PARA A GRÁFICA - VIBZ TOURIST PASS / VIP MEMBER\n"
+                "----------------------------------------------------------\n"
+                "- Padrão físico: Cartão PVC formato CR-80 (85.60 mm x 53.98 mm)\n"
+                "- Cantos: Arredondados raio 3.18 mm\n"
+                "- Arquivos na raiz do ZIP: '{num}-CARTAO-VIP-PRONTO.png' (cada cartão montado pronto para produção)\n"
+                "- Pasta /cartoes-completos-png/: Cada cartão montado em alta resolução (1024x619) com fundo, logo, chip e QR Code pronto para impressão\n"
+                "- Arquivo TODOS-OS-CARTOES-IMPRESSAO.pdf: Todos os cartões reunidos em um único PDF multipágina para bureau/gráfica\n"
+                "- Pasta /qrcodes-svg/: SVGs vetoriais dos QR Codes de cada cartão\n"
+                "- Arquivo relacao-cartoes-lote.csv: Relação de todos os números, tokens e links de acesso\n"
+                "- Arquivo visualizador-para-impressao.html: Visualizador para impressão direta em papel ou PDF\n"
+            )
+
+            html_viewer = f"""<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>VIBZ Tourist Pass - Amostra para Gráfica ({len(valid_tokens)} cartões)</title>
+<style>
+  @page {{ size: A4; margin: 10mm; }}
+  * {{ box-sizing: border-box; }}
+  body {{ font-family: Inter, Arial, sans-serif; background: #0c0b12; color: #fff; margin: 0; padding: 20px; }}
+  .header {{ text-align: center; margin-bottom: 24px; }}
+  .header h1 {{ margin: 0 0 6px; font-size: 22px; color: #ff9e73; }}
+  .header p {{ margin: 0; font-size: 13px; color: #b8b4bf; }}
+  .sheet {{ display: grid; grid-template-columns: repeat(2, 85.6mm); gap: 8mm; justify-content: center; }}
+  .card-item {{ width: 85.6mm; height: 53.98mm; border-radius: 12px; overflow: hidden; page-break-inside: avoid; }}
+  .card-item img {{ width: 100%; height: 100%; object-fit: cover; display: block; border-radius: 12px; }}
+  @media print {{
+    body {{ background: #fff; color: #000; padding: 0; }}
+    .header {{ display: none; }}
+    .card-item img {{ border: 1px solid #111; }}
+  }}
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>VIBZ TOURIST PASS · LOTE PARA GRÁFICA</h1>
+    <p>{len(valid_tokens)} cartões completos montados em alta definição. Use Ctrl+P para imprimir ou gerar PDF.</p>
+  </div>
+  <div class="sheet">
+    {"".join(cards_html_parts)}
+  </div>
+</body>
+</html>"""
+            zf.writestr("visualizador-para-impressao.html", html_viewer)
+
+        buf.seek(0)
+        filename = f"vibz-lote-grafica-{len(valid_tokens)}.zip"
+        return Response(
+            buf.read(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
+    @app.get("/api/reports/admissions")
+    def get_admissions_report(days: int = 30, origin_id: str | None = None, _staff: Actor = Depends(actor)):
+        return store_call(
+            store.report_admissions,
+            days=days,
+            origin_id=(origin_id or None) if origin_id != "all" else None
+        )
+
+
 
     @app.get("/p/{token}")
     def public_pass(token: str):

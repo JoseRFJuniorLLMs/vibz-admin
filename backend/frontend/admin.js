@@ -3,8 +3,13 @@ const apiRoot = new URL('../api/', window.location.href);
 let session = null;
 let origins = [];
 let cardsPage = 1;
+let scannedPage = 1;
 let originsPage = 1;
 let partnersPage = 1;
+let usersPage = 1;
+let issuedTokens = [];
+let currentCardsList = [];
+let currentReportData = null;
 let selectedPartner = null;
 let cameraStream = null;
 let scanActive = false;
@@ -45,6 +50,9 @@ async function api(path, {method = 'GET', body} = {}) {
 function showLoggedOut() {
   stopCamera();
   session = null;
+  origins = [];
+  $('originSearch').value = '';
+  $('userForm').reset();
   $('workspace').hidden = true;
   $('account').hidden = true;
   $('loginPanel').hidden = false;
@@ -56,11 +64,15 @@ async function showLoggedIn(data) {
   $('workspace').hidden = false;
   $('account').hidden = false;
   $('accountName').textContent = `${data.username} · ${data.role === 'admin' ? 'admin' : 'operador'}`;
-  document.querySelectorAll('.admin-only').forEach((element) => {
+  document.querySelectorAll('.tab.admin-only, form.admin-only').forEach((element) => {
     element.hidden = data.role !== 'admin';
   });
   $('issueOperatorNote').hidden = data.role === 'admin';
-  await Promise.all([refreshOrigins(), refreshCards()]);
+  switchTab('scan');
+  const loads = await Promise.allSettled([refreshOrigins(), refreshCards()]);
+  for (const result of loads) {
+    if (result.status === 'rejected') notice(result.reason.message, 'error');
+  }
 }
 
 function switchTab(name) {
@@ -71,7 +83,13 @@ function switchTab(name) {
     section.hidden = section.id !== `${name}Tab`;
   }
   if (name !== 'scan') stopCamera();
+  if (name === 'issue') refreshOriginChoices().catch((error) => notice(error.message, 'error'));
+  if (name === 'cards') refreshCards().catch((error) => notice(error.message, 'error'));
+  if (name === 'scanned') refreshScannedCards().catch((error) => notice(error.message, 'error'));
+  if (name === 'reports') refreshReports().catch((error) => notice(error.message, 'error'));
+  if (name === 'origins') refreshOrigins().catch((error) => notice(error.message, 'error'));
   if (name === 'partners') refreshPartners().catch((error) => notice(error.message, 'error'));
+  if (name === 'users' && session?.role === 'admin') refreshUsers().catch((error) => notice(error.message, 'error'));
   notice('');
 }
 
@@ -82,36 +100,137 @@ function renderPager(prefix, result) {
   $(`${prefix}Next`).disabled = result.page >= pageCount;
 }
 
-async function refreshOrigins() {
-  const [result, options] = await Promise.all([
-    api(`origins?page=${originsPage}&page_size=20`), api('origins/options'),
-  ]);
-  origins = options;
+async function refreshUsers() {
+  const result = await api(`users?page=${usersPage}&page_size=20`);
+  const body = $('usersBody');
+  body.replaceChildren();
+  for (const user of result.items) {
+    const row = node('tr');
+    row.append(node('td', '', user.username),
+      node('td', '', user.role === 'admin' ? 'Administrador' : 'Operador'),
+      node('td', '', user.active ? 'Ativo' : 'Inativo'),
+      node('td', '', formatDate(user.created_at)));
+    body.append(row);
+  }
+  if (!result.items.length) {
+    const row = node('tr');
+    const cell = node('td', '', 'Nenhum usuário cadastrado.');
+    cell.colSpan = 4;
+    row.append(cell);
+    body.append(row);
+  }
+  renderPager('users', result);
+}
+
+function renderOriginChoices() {
   const select = $('issueOrigin');
   const selected = select.value;
-  const placeholder = node('option', '', 'Selecione uma origem');
+  const query = $('originSearch').value.trim().toLocaleLowerCase('pt-BR');
+  const matches = origins.filter((o) => !query || o.name.toLocaleLowerCase('pt-BR').includes(query));
+
+  const placeholder = node('option', '', matches.length ? 'Selecione uma origem ou parceiro' : 'Nenhum local encontrado');
   placeholder.value = '';
+
   const registeredGroup = node('optgroup');
   registeredGroup.label = 'Origens cadastradas';
+
+  const confirmedGroup = node('optgroup');
+  confirmedGroup.label = 'Parceiros contratados — prontos para emissão';
+
   const prospectGroup = node('optgroup');
-  prospectGroup.label = 'Lista comercial — a confirmar';
-  const list = $('originList');
-  list.replaceChildren();
-  for (const origin of origins) {
-    const label = origin.source === 'prospect'
-      ? `${origin.name} — ${partnerStatusLabels[origin.status] || 'A confirmar'}`
-      : origin.name;
-    const option = node('option', '', label);
-    option.value = origin.id;
-    (origin.source === 'prospect' ? prospectGroup : registeredGroup).append(option);
+  prospectGroup.label = 'Demais estabelecimentos — requer contratação prévia';
+
+  for (const origin of matches) {
+    if (origin.source === 'origin') {
+      const opt = node('option', '', `${origin.name} — ${origin.category}`);
+      opt.value = origin.id;
+      registeredGroup.append(opt);
+    } else if (origin.status === 'parceiro') {
+      const opt = node('option', '', `${origin.name} — ${categoryLabels[origin.category]} · Contratado`);
+      opt.value = origin.id;
+      confirmedGroup.append(opt);
+    } else {
+      const opt = node('option', '', `${origin.name} — ${categoryLabels[origin.category]} · ${partnerStatusLabels[origin.status] || 'Pendente'}`);
+      opt.value = origin.id;
+      prospectGroup.append(opt);
+    }
   }
+
   select.replaceChildren(placeholder);
   if (registeredGroup.children.length) select.append(registeredGroup);
+  if (confirmedGroup.children.length) select.append(confirmedGroup);
   if (prospectGroup.children.length) select.append(prospectGroup);
-  select.value = origins.some((origin) => origin.id === selected) ? selected : '';
-  $('originHelp').textContent = prospectGroup.children.length
-    ? `${prospectGroup.children.length} locais da lista comercial disponíveis. Confirme a distribuição com o local antes de emitir; a origem será cadastrada na primeira emissão.`
-    : 'Cadastre uma origem na aba Origens antes de emitir cartões.';
+
+  select.value = matches.some((o) => o.id === selected) ? selected : '';
+  renderSelectedOrigin();
+
+  const totalContracted = origins.filter((o) => o.source === 'origin' || o.status === 'parceiro').length;
+  $('originHelp').textContent = `${totalContracted} local(is) contratado(s) prontos para emissão. Estabelecimentos pendentes podem ser contratados em 1 clique.`;
+}
+
+function renderSelectedOrigin() {
+  const select = $('issueOrigin');
+  const chosen = origins.find((origin) => origin.id === select.value);
+  const opm = $('originPartnerManager');
+  const submitBtn = $('issueSubmitBtn');
+
+  if (!chosen) {
+    $('originSelectedInfo').textContent = '';
+    if (opm) opm.hidden = true;
+    if (submitBtn) submitBtn.disabled = true;
+    return;
+  }
+
+  const isContracted = chosen.source === 'origin' || chosen.status === 'parceiro';
+
+  $('originSelectedInfo').textContent = chosen.source === 'prospect'
+    ? `${categoryLabels[chosen.category]} · ${partnerStatusLabels[chosen.status] || 'Pendente'}`
+    : `${chosen.category} · Origem cadastrada`;
+
+  if (opm) {
+    opm.hidden = false;
+    $('opmName').textContent = chosen.name;
+    $('opmCategory').textContent = categoryLabels[chosen.category] || chosen.category;
+    const badge = $('opmStatusBadge');
+    badge.textContent = isContracted ? 'Parceiro Contratado' : (partnerStatusLabels[chosen.status] || 'Não contratado');
+    badge.className = `badge ${isContracted ? 'valid' : 'used'}`;
+
+    const promoteBtn = $('opmPromoteBtn');
+    if (promoteBtn) {
+      promoteBtn.hidden = isContracted;
+    }
+  }
+
+  if (submitBtn) {
+    submitBtn.disabled = !isContracted;
+    if (!isContracted) {
+      notice(`"${chosen.name}" ainda não é parceiro contratado. Clique em "Contratar parceiro (1 clique)" para autorizar a emissão.`, 'error');
+    } else {
+      notice('');
+    }
+  }
+}
+
+async function refreshOriginChoices() {
+  const select = $('issueOrigin');
+  select.disabled = true;
+  $('originHelp').textContent = 'Carregando origens...';
+  try {
+    origins = await api('origins/options');
+    renderOriginChoices();
+  } catch (error) {
+    $('originHelp').textContent = `Não foi possível carregar as origens: ${error.message}. Clique em Atualizar origens.`;
+    throw error;
+  } finally {
+    select.disabled = false;
+  }
+}
+
+async function refreshOrigins() {
+  await refreshOriginChoices();
+  const result = await api(`origins?page=${originsPage}&page_size=20`);
+  const list = $('originList');
+  list.replaceChildren();
   for (const origin of result.items) {
     const card = node('div', 'origin-card');
     card.append(node('strong', '', origin.name), node('small', '', origin.category));
@@ -136,6 +255,7 @@ function statusLabel(card) {
 async function refreshCards() {
   const result = await api(`cards?page=${cardsPage}&page_size=20`);
   const cards = result.items;
+  currentCardsList = cards;
   const body = $('cardsBody');
   body.replaceChildren();
   for (const card of cards) {
@@ -144,16 +264,40 @@ async function refreshCards() {
     const status = node('span', `badge ${css}`, label);
     const statusCell = node('td');
     statusCell.append(status);
-    const action = node('button', '', 'Ver QR');
+
+    const actionWrap = node('div', 'button-row');
+    actionWrap.style.margin = '0';
+    actionWrap.style.gap = '8px';
+
+    const action = node('button', '', 'Ver Cartão');
     action.type = 'button';
+    action.style.padding = '5px 10px';
+    action.style.fontSize = '12px';
     action.addEventListener('click', () => {
       renderIssued([card]);
       switchTab('issue');
+      window.scrollTo({top: $('issuedCards').offsetTop - 60, behavior: 'smooth'});
     });
+
+    const dlBtn = node('a', 'text-button', 'Baixar PNG ↓');
+    dlBtn.href = new URL(`cards/${encodeURIComponent(card.token)}/card.png`, apiRoot).toString();
+    dlBtn.download = `${card.number}.png`;
+    dlBtn.style.padding = '5px 8px';
+    dlBtn.style.fontSize = '12px';
+    dlBtn.style.color = '#ff9e73';
+    dlBtn.style.fontWeight = '700';
+
+    actionWrap.append(action, dlBtn);
     const actionCell = node('td');
-    actionCell.append(action);
-    row.append(node('td', '', card.number), node('td', '', card.origin_name), statusCell,
-      node('td', '', formatDate(card.issued_at)), actionCell);
+    actionCell.append(actionWrap);
+
+    row.append(
+      node('td', '', card.number),
+      node('td', '', card.origin_name),
+      statusCell,
+      node('td', '', formatDate(card.issued_at)),
+      actionCell
+    );
     body.append(row);
   }
   if (!cards.length) {
@@ -164,6 +308,41 @@ async function refreshCards() {
     body.append(row);
   }
   renderPager('cards', result);
+}
+
+async function refreshScannedCards() {
+  const result = await api(`cards?status=redeemed&page=${scannedPage}&page_size=20`);
+  const cards = result.items;
+  const body = $('scannedCardsBody');
+  body.replaceChildren();
+  for (const card of cards) {
+    const row = node('tr');
+
+    const status = node('span', 'badge valid', 'Entrada Confirmada');
+    const statusCell = node('td');
+    statusCell.append(status);
+
+    const timeStr = card.redeemed_at ? card.redeemed_at.slice(11, 16) : '';
+    const dateFormatted = formatDate(card.redeemed_at) + (timeStr ? ` às ${timeStr}` : '');
+
+    row.append(
+      node('td', '', card.number),
+      node('td', '', card.origin_name || 'VIBZ TOURIST PASS'),
+      node('td', '', dateFormatted),
+      node('td', '', card.wristband || 'Sem pulseira'),
+      node('td', '', card.redeemed_by || 'Operador'),
+      statusCell
+    );
+    body.append(row);
+  }
+  if (!cards.length) {
+    const row = node('tr');
+    const cell = node('td', '', 'Nenhum cartão lido ou entrada registrada até o momento.');
+    cell.colSpan = 6;
+    row.append(cell);
+    body.append(row);
+  }
+  renderPager('scanned', result);
 }
 
 const categoryLabels = {hospedagem: 'Hospedagem', gastronomia: 'Gastronomia', praia: 'Praia'};
@@ -216,20 +395,31 @@ function editPartner(partner) {
 }
 
 function renderIssued(cards) {
+  issuedTokens = cards.map((c) => c.token).filter(Boolean);
   const target = $('issuedCards');
   target.replaceChildren();
   for (const card of cards) {
-    const item = node('article', 'print-card');
-    const image = node('img');
-    image.alt = `QR do cartão ${card.number}`;
-    image.src = card.qr_data_url || new URL(`cards/${encodeURIComponent(card.token)}/qr.svg`, apiRoot).toString();
-    item.append(node('strong', '', 'VIBZ TOURIST PASS'), image,
-      node('strong', '', card.number), node('div', 'origin', card.origin_name),
-      node('small', '', card.valid_until ? `Válido até ${card.valid_until}` : 'Entrada cortesia · consumo não incluso'));
+    const item = node('article', 'card-preview-item');
+    const cardImgUrl = card.card_data_url || new URL(`cards/${encodeURIComponent(card.token)}/card.png`, apiRoot).toString();
+
+    const image = node('img', 'card-full-img');
+    image.alt = `Cartão VIP ${card.number}`;
+    image.src = cardImgUrl;
+
+    const btnRow = node('div', 'button-row');
+    btnRow.style.margin = '4px 0 0 0';
+    btnRow.style.width = '100%';
+
+    const dlBtn = node('a', 'primary dl-card-btn', `⬇️ Baixar PNG (${card.number})`);
+    dlBtn.href = cardImgUrl;
+    dlBtn.download = `${card.number}-CARTAO-VIP.png`;
+
+    btnRow.append(dlBtn);
+    item.append(image, btnRow);
     target.append(item);
   }
   $('issuedActions').hidden = cards.length === 0;
-  $('issuedCount').textContent = `${cards.length} cartão(ões) pronto(s) para imprimir`;
+  $('issuedCount').textContent = `${cards.length} cartão(ões) completo(s) gerado(s) em alta resolução e salvo(s) no banco.`;
 }
 
 function renderCard(card) {
@@ -289,11 +479,40 @@ function renderCard(card) {
   target.append(panel);
 }
 
+function playBling() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const gain = ctx.createGain();
+    gain.connect(ctx.destination);
+    const osc1 = ctx.createOscillator();
+    osc1.connect(gain);
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(988, ctx.currentTime);
+    osc1.frequency.exponentialRampToValueAtTime(1480, ctx.currentTime + 0.08);
+    gain.gain.setValueAtTime(0.55, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+    osc1.start(ctx.currentTime);
+    osc1.stop(ctx.currentTime + 0.35);
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+    osc2.connect(gain2);
+    gain2.connect(ctx.destination);
+    osc2.type = 'sine';
+    osc2.frequency.setValueAtTime(1976, ctx.currentTime + 0.06);
+    gain2.gain.setValueAtTime(0.25, ctx.currentTime + 0.06);
+    gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.45);
+    osc2.start(ctx.currentTime + 0.06);
+    osc2.stop(ctx.currentTime + 0.45);
+  } catch (_) { /* AudioContext indisponível — silêncio */ }
+}
+
 async function lookupQr(value) {
   const card = await api('lookup', {method: 'POST', body: {qr: value}});
   renderCard(card);
   stopCamera();
-  notice(`${card.number} identificado: ${card.origin_name}.`, card.status === 'issued' && !card.expired ? 'success' : 'error');
+  const valid = card.status === 'issued' && !card.expired;
+  if (valid) playBling();
+  notice(`${card.number} identificado: ${card.origin_name}.`, valid ? 'success' : 'error');
 }
 
 function stopCamera() {
@@ -341,16 +560,45 @@ async function scanFrame(timestamp) {
 }
 
 async function startCamera() {
-  if (!navigator.mediaDevices?.getUserMedia) throw new Error('A câmera exige HTTPS e permissão do navegador.');
-  if (!detectorSupported && !window.jsQR) throw new Error('Leitor de QR indisponível neste navegador. Use o campo de código.');
+  const placeholder = $('cameraPlaceholder');
+  if (!navigator.mediaDevices?.getUserMedia) {
+    const msg = 'A câmera exige HTTPS e permissão do navegador.';
+    placeholder.innerHTML = `<span style="color:#ff8790;padding:12px;display:block">${msg}</span>`;
+    throw new Error(msg);
+  }
   stopCamera();
-  cameraStream = await navigator.mediaDevices.getUserMedia({video: {facingMode: {ideal: 'environment'}}, audio: false});
-  $('camera').srcObject = cameraStream;
-  $('camera').hidden = false;
-  $('cameraPlaceholder').hidden = true;
-  await $('camera').play();
-  scanActive = true;
-  requestAnimationFrame(scanFrame);
+  placeholder.textContent = 'Conectando câmera...';
+  try {
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+    } catch (_) {
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: false,
+      });
+    }
+    const video = $('camera');
+    video.srcObject = cameraStream;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('webkit-playsinline', '');
+    video.muted = true;
+    video.hidden = false;
+    placeholder.hidden = true;
+    await new Promise((resolve) => {
+      if (video.readyState >= 2) resolve();
+      else video.onloadedmetadata = () => resolve();
+    });
+    await video.play();
+    scanActive = true;
+    requestAnimationFrame(scanFrame);
+  } catch (error) {
+    stopCamera();
+    placeholder.innerHTML = `<div style="color:#ff8790;padding:12px"><strong>Não foi possível abrir a câmera:</strong><br>${error.message}</div>`;
+    throw error;
+  }
 }
 
 document.querySelectorAll('.tab').forEach((button) => button.addEventListener('click', () => switchTab(button.dataset.tab)));
@@ -388,6 +636,32 @@ $('cardsPrev').addEventListener('click', () => { cardsPage--; refreshCards().cat
 $('cardsNext').addEventListener('click', () => { cardsPage++; refreshCards().catch((error) => notice(error.message, 'error')); });
 $('originsPrev').addEventListener('click', () => { originsPage--; refreshOrigins().catch((error) => notice(error.message, 'error')); });
 $('originsNext').addEventListener('click', () => { originsPage++; refreshOrigins().catch((error) => notice(error.message, 'error')); });
+$('usersPrev').addEventListener('click', () => { usersPage--; refreshUsers().catch((error) => notice(error.message, 'error')); });
+$('usersNext').addEventListener('click', () => { usersPage++; refreshUsers().catch((error) => notice(error.message, 'error')); });
+$('userForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (session?.role !== 'admin') return;
+  const password = $('newPassword').value;
+  if (password !== $('confirmPassword').value) {
+    notice('As senhas não coincidem.', 'error');
+    return;
+  }
+  const role = $('newRole').value;
+  if (role === 'admin' && !window.confirm('Este usuário terá acesso completo, inclusive emissão de cartões e cadastro de outros administradores. Continuar?')) return;
+  const button = event.target.querySelector('button[type="submit"]');
+  button.disabled = true;
+  try {
+    await api('users', {method: 'POST', body: {username: $('newUsername').value.trim(), password, role}});
+    event.target.reset();
+    usersPage = 1;
+    await refreshUsers();
+    notice('Usuário cadastrado. Informe a senha inicial por um canal privado.', 'success');
+  } catch (error) { notice(error.message, 'error'); }
+  finally { button.disabled = false; }
+});
+$('originSearch').addEventListener('input', renderOriginChoices);
+$('issueOrigin').addEventListener('change', renderSelectedOrigin);
+$('refreshOriginChoices').addEventListener('click', () => refreshOriginChoices().catch((error) => notice(error.message, 'error')));
 $('partnersPrev').addEventListener('click', () => { partnersPage--; refreshPartners().catch((error) => notice(error.message, 'error')); });
 $('partnersNext').addEventListener('click', () => { partnersPage++; refreshPartners().catch((error) => notice(error.message, 'error')); });
 $('partnerFilter').addEventListener('submit', (event) => {
@@ -397,60 +671,549 @@ $('partnerFilter').addEventListener('submit', (event) => {
   refreshPartners().catch((error) => notice(error.message, 'error'));
 });
 $('cancelPartnerEdit').addEventListener('click', () => { $('partnerEdit').hidden = true; selectedPartner = null; });
+
 $('partnerEdit').addEventListener('submit', async (event) => {
   event.preventDefault();
   if (!selectedPartner || session?.role !== 'admin') return;
   const button = event.target.querySelector('button[type="submit"]');
   button.disabled = true;
   try {
-    const data = Object.fromEntries(new FormData(event.target).entries());
-    data.estimated_rooms = data.estimated_rooms === '' ? null : Number(data.estimated_rooms);
-    for (const [key, value] of Object.entries(data)) {
-      if (typeof value === 'string') data[key] = value.trim();
+    const formElements = event.target.elements;
+    const payload = {};
+    const fields = ['neighborhood', 'address', 'phone', 'whatsapp', 'instagram', 'website', 'manager', 'estimated_rooms', 'priority', 'status'];
+    for (const f of fields) {
+      if (formElements[f]) {
+        let val = formElements[f].value.trim();
+        if (f === 'estimated_rooms') {
+          payload[f] = val === '' ? null : Number(val);
+        } else {
+          payload[f] = val;
+        }
+      }
     }
-    if (data.status === 'parceiro' && selectedPartner.status !== 'parceiro' &&
-        !window.confirm('A parceria foi confirmada com este estabelecimento?')) return;
-    const changes = Object.fromEntries(Object.entries(data).filter(([key, value]) => value !== selectedPartner[key]));
-    if (!Object.keys(changes).length) {
-      notice('Nenhuma alteração para salvar.');
-      return;
-    }
-    await api(`partners/${encodeURIComponent(selectedPartner.id)}`, {method: 'PATCH', body: changes});
+    await api(`partners/${encodeURIComponent(selectedPartner.id)}`, {method: 'PATCH', body: payload});
     event.target.hidden = true;
     selectedPartner = null;
     await refreshPartners();
-    notice('Estabelecimento atualizado.', 'success');
-  } catch (error) { notice(error.message, 'error'); }
-  finally { button.disabled = false; }
+    await refreshOriginChoices();
+    notice('Estabelecimento atualizado com sucesso.', 'success');
+  } catch (error) {
+    notice(error.message, 'error');
+  } finally {
+    button.disabled = false;
+  }
 });
+
+// Ações no Card do Parceiro Selecionado (na tela de Gerar Cartões)
+$('opmPromoteBtn')?.addEventListener('click', async () => {
+  const select = $('issueOrigin');
+  const chosen = origins.find((origin) => origin.id === select.value);
+  if (!chosen || chosen.source !== 'prospect') return;
+  const btn = $('opmPromoteBtn');
+  btn.disabled = true;
+  btn.textContent = 'Contratando...';
+  try {
+    await api(`partners/${encodeURIComponent(chosen.id)}`, {
+      method: 'PATCH',
+      body: { status: 'parceiro' },
+    });
+    notice(`"${chosen.name}" marcado como Parceiro Contratado! Emissão de cartões liberada.`, 'success');
+    await refreshOriginChoices();
+    select.value = chosen.id;
+    renderSelectedOrigin();
+  } catch (err) {
+    notice(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Contratar parceiro (1 clique)';
+  }
+});
+
+$('opmEditBtn')?.addEventListener('click', async () => {
+  const select = $('issueOrigin');
+  const chosen = origins.find((origin) => origin.id === select.value);
+  if (!chosen) return;
+  switchTab('partners');
+  $('partnerQuery').value = chosen.name;
+  await refreshPartners();
+  editPartner(chosen);
+});
+
 $('issueForm').addEventListener('submit', async (event) => {
   event.preventDefault();
+  const select = $('issueOrigin');
+  const chosen = origins.find((origin) => origin.id === select.value);
+  if (!chosen) {
+    notice('Selecione uma origem ou parceiro.', 'error');
+    return;
+  }
+  const isContracted = chosen.source === 'origin' || chosen.status === 'parceiro';
+  if (!isContracted) {
+    notice(`Não é permitido emitir cartões para estabelecimentos não contratados. Clique em "Contratar parceiro (1 clique)" acima.`, 'error');
+    return;
+  }
   const button = event.target.querySelector('button[type="submit"]');
   button.disabled = true;
+  button.textContent = 'Gerando e salvando...';
   try {
-    const chosen = origins.find((origin) => origin.id === $('issueOrigin').value);
-    if (chosen?.source === 'prospect' && chosen.status !== 'parceiro' &&
-        !window.confirm(`${chosen.name} ainda não está marcado como parceiro. A distribuição foi combinada com esse local?`)) return;
     const cards = await api('cards', {method: 'POST', body: {
-      origin_id: $('issueOrigin').value,
+      origin_id: select.value,
       count: Number($('issueCount').value),
       valid_until: $('issueExpiry').value || null,
     }});
     renderIssued(cards);
     cardsPage = 1;
     await refreshCards();
-    notice(`Lote emitido: ${cards[0].number} a ${cards[cards.length - 1].number}.`, 'success');
-  } catch (error) { notice(error.message, 'error'); }
-  finally { button.disabled = false; }
+    notice(`Lote de ${cards.length} cartões salvo no banco com sucesso: ${cards[0].number} a ${cards[cards.length - 1].number}.`, 'success');
+  } catch (error) {
+    notice(error.message, 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Gerar lote';
+  }
 });
-$('printCards').addEventListener('click', () => window.print());
-$('refreshCards').addEventListener('click', () => refreshCards().catch((error) => notice(error.message, 'error')));
-$('lookupForm').addEventListener('submit', async (event) => {
+
+async function exportForPrint(tokens = issuedTokens) {
+  if (!tokens || !tokens.length) { notice('Nenhum cartão selecionado para exportar.', 'error'); return; }
+  const button = $('exportGrafica');
+  if (button) { button.disabled = true; button.textContent = 'Gerando ZIP...'; }
+  try {
+    const response = await fetch(new URL('cards/export.zip', apiRoot), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/zip',
+        ...(session?.csrf_token ? {'X-CSRF-Token': session.csrf_token} : {}),
+      },
+      credentials: 'same-origin',
+      cache: 'no-store',
+      body: JSON.stringify({tokens}),
+    });
+    if (!response.ok) {
+      let msg = 'Falha ao gerar ZIP';
+      try { msg = (await response.json()).detail || msg; } catch (_) { /* keep */ }
+      throw new Error(msg);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `vibz-lote-grafica-${tokens.length}.zip`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    notice(`ZIP baixado com sucesso: ${tokens.length} cartões completos montados em PNG (1024x619) + PDF para gráfica + QR codes vetoriais + CSV.`, 'success');
+  } catch (error) {
+    notice(error.message, 'error');
+  } finally {
+    if (button) { button.disabled = false; button.textContent = 'Exportar para gráfica (ZIP) ↓'; }
+  }
+}
+
+async function refreshReports() {
+  const period = $('reportPeriod')?.value || '30';
+  const origin = $('reportOriginFilter')?.value || 'all';
+
+  let days = 30;
+  if (period === 'today') days = 1;
+  else if (!isNaN(Number(period))) days = Number(period);
+
+  const queryParams = new URLSearchParams();
+  queryParams.set('days', String(days));
+  if (origin && origin !== 'all') queryParams.set('origin_id', origin);
+
+  const data = await api(`reports/admissions?${queryParams.toString()}`);
+  currentReportData = data;
+
+  const sum = data.summary || {};
+  $('kpiTotalIssued').textContent = (sum.total_issued || 0).toLocaleString();
+  $('kpiTodayIssued').textContent = `${(sum.today_issued || 0).toLocaleString()} hoje`;
+
+  $('kpiTotalAdmissions').textContent = (sum.total_admissions || 0).toLocaleString();
+  $('kpiTodayAdmissions').textContent = `${(sum.today_admissions || 0).toLocaleString()} hoje`;
+
+  $('kpiTotalUnused').textContent = (sum.total_unused || 0).toLocaleString();
+  $('kpiTodayUnused').textContent = `${(sum.today_unused || 0).toLocaleString()} hoje`;
+
+  $('kpiConversionRate').textContent = `${sum.conversion_rate || 0}%`;
+  $('kpiTodayConvRate').textContent = `${sum.today_conversion_rate || 0}% hoje`;
+
+  renderDailyBarChart(data.daily || []);
+  renderStatusDonutChart(sum);
+  renderHourlyChart(data.hourly_today || []);
+  renderReportDailyTable(data.daily || []);
+  renderReportPartnersTable(data.partners || []);
+}
+
+function renderDailyBarChart(daily) {
+  const container = $('dailyChartContainer');
+  if (!container) return;
+  container.replaceChildren();
+
+  if (!daily.length) {
+    container.innerHTML = '<div class="empty-state" style="min-height:160px">Nenhuma movimentação registrada no período selecionado.</div>';
+    return;
+  }
+
+  const items = [...daily].reverse();
+  const maxVal = Math.max(1, ...items.map(d => Math.max(d.issued, d.admissions, d.unused)));
+
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  const viewW = Math.max(500, items.length * 70);
+  svg.setAttribute("width", "100%");
+  svg.setAttribute("height", "220");
+  svg.setAttribute("viewBox", `0 0 ${viewW} 220`);
+  svg.style.overflow = "visible";
+
+  const chartHeight = 150;
+  const colWidth = viewW / items.length;
+
+  items.forEach((d, i) => {
+    const x = i * colWidth + colWidth * 0.12;
+    const barW = colWidth * 0.24;
+
+    const hIssued = (d.issued / maxVal) * chartHeight;
+    const hAdm = (d.admissions / maxVal) * chartHeight;
+    const hUnused = (d.unused / maxVal) * chartHeight;
+
+    const g = document.createElementNS(svgNS, "g");
+
+    const rectIssued = document.createElementNS(svgNS, "rect");
+    rectIssued.setAttribute("x", x);
+    rectIssued.setAttribute("y", chartHeight - hIssued + 20);
+    rectIssued.setAttribute("width", barW);
+    rectIssued.setAttribute("height", Math.max(2, hIssued));
+    rectIssued.setAttribute("fill", "#ff7b4b");
+    rectIssued.setAttribute("rx", "3");
+    const titleIssued = document.createElementNS(svgNS, "title");
+    titleIssued.textContent = `${d.date}: ${d.issued} cartões emitidos`;
+    rectIssued.appendChild(titleIssued);
+
+    const rectAdm = document.createElementNS(svgNS, "rect");
+    rectAdm.setAttribute("x", x + barW + 3);
+    rectAdm.setAttribute("y", chartHeight - hAdm + 20);
+    rectAdm.setAttribute("width", barW);
+    rectAdm.setAttribute("height", Math.max(2, hAdm));
+    rectAdm.setAttribute("fill", "#44d99e");
+    rectAdm.setAttribute("rx", "3");
+    const titleAdm = document.createElementNS(svgNS, "title");
+    titleAdm.textContent = `${d.date}: ${d.admissions} entradas confirmadas`;
+    rectAdm.appendChild(titleAdm);
+
+    const rectUnused = document.createElementNS(svgNS, "rect");
+    rectUnused.setAttribute("x", x + (barW + 3) * 2);
+    rectUnused.setAttribute("y", chartHeight - hUnused + 20);
+    rectUnused.setAttribute("width", barW);
+    rectUnused.setAttribute("height", Math.max(2, hUnused));
+    rectUnused.setAttribute("fill", "#7e7492");
+    rectUnused.setAttribute("rx", "3");
+    const titleUnused = document.createElementNS(svgNS, "title");
+    titleUnused.textContent = `${d.date}: ${d.unused} não usados`;
+    rectUnused.appendChild(titleUnused);
+
+    const text = document.createElementNS(svgNS, "text");
+    text.setAttribute("x", x + barW * 1.5);
+    text.setAttribute("y", "195");
+    text.setAttribute("text-anchor", "middle");
+    text.setAttribute("fill", "#a8a0b0");
+    text.setAttribute("font-size", "11");
+    text.textContent = d.date.slice(5);
+
+    g.appendChild(rectIssued);
+    g.appendChild(rectAdm);
+    g.appendChild(rectUnused);
+    g.appendChild(text);
+    svg.appendChild(g);
+  });
+
+  container.appendChild(svg);
+}
+
+function renderStatusDonutChart(sum) {
+  const container = $('statusChartContainer');
+  if (!container) return;
+  container.replaceChildren();
+
+  const total = sum.total_issued || 0;
+  const used = sum.total_admissions || 0;
+  const unused = sum.total_unused || 0;
+
+  if (total === 0) {
+    container.innerHTML = '<div class="empty-state" style="min-height:160px">Nenhum cartão emitido ainda.</div>';
+    return;
+  }
+
+  const usedPct = Math.round((used / total) * 100);
+  const unusedPct = 100 - usedPct;
+
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("width", "150");
+  svg.setAttribute("height", "150");
+  svg.setAttribute("viewBox", "0 0 42 42");
+
+  const radius = 15.91549430918954;
+  const circ = 100;
+
+  const circleBg = document.createElementNS(svgNS, "circle");
+  circleBg.setAttribute("cx", "21");
+  circleBg.setAttribute("cy", "21");
+  circleBg.setAttribute("r", radius);
+  circleBg.setAttribute("fill", "transparent");
+  circleBg.setAttribute("stroke", "#241f2e");
+  circleBg.setAttribute("stroke-width", "5");
+
+  const circleUnused = document.createElementNS(svgNS, "circle");
+  circleUnused.setAttribute("cx", "21");
+  circleUnused.setAttribute("cy", "21");
+  circleUnused.setAttribute("r", radius);
+  circleUnused.setAttribute("fill", "transparent");
+  circleUnused.setAttribute("stroke", "#ff7b4b");
+  circleUnused.setAttribute("stroke-width", "5");
+  circleUnused.setAttribute("stroke-dasharray", `${unusedPct} ${circ - unusedPct}`);
+  circleUnused.setAttribute("stroke-dashoffset", "25");
+
+  const circleUsed = document.createElementNS(svgNS, "circle");
+  circleUsed.setAttribute("cx", "21");
+  circleUsed.setAttribute("cy", "21");
+  circleUsed.setAttribute("r", radius);
+  circleUsed.setAttribute("fill", "transparent");
+  circleUsed.setAttribute("stroke", "#44d99e");
+  circleUsed.setAttribute("stroke-width", "5");
+  circleUsed.setAttribute("stroke-dasharray", `${usedPct} ${circ - usedPct}`);
+  circleUsed.setAttribute("stroke-dashoffset", `${25 - unusedPct}`);
+
+  const textVal = document.createElementNS(svgNS, "text");
+  textVal.setAttribute("x", "21");
+  textVal.setAttribute("y", "21");
+  textVal.setAttribute("text-anchor", "middle");
+  textVal.setAttribute("dominant-baseline", "middle");
+  textVal.setAttribute("fill", "#ffffff");
+  textVal.setAttribute("font-size", "7");
+  textVal.setAttribute("font-weight", "bold");
+  textVal.textContent = `${usedPct}%`;
+
+  const textLabel = document.createElementNS(svgNS, "text");
+  textLabel.setAttribute("x", "21");
+  textLabel.setAttribute("y", "27");
+  textLabel.setAttribute("text-anchor", "middle");
+  textLabel.setAttribute("dominant-baseline", "middle");
+  textLabel.setAttribute("fill", "#a8a0b0");
+  textLabel.setAttribute("font-size", "3");
+  textLabel.textContent = "UTILIZADOS";
+
+  svg.appendChild(circleBg);
+  svg.appendChild(circleUnused);
+  svg.appendChild(circleUsed);
+  svg.appendChild(textVal);
+  svg.appendChild(textLabel);
+
+  const legend = node('div', 'chart-legend');
+  legend.style.display = 'flex';
+  legend.style.flexDirection = 'column';
+  legend.style.gap = '6px';
+  legend.style.marginTop = '12px';
+  legend.style.fontSize = '12px';
+
+  legend.innerHTML = `
+    <div style="display:flex;align-items:center;gap:6px">
+      <span style="width:10px;height:10px;background:#44d99e;border-radius:2px"></span>
+      <span>Entraram no VIBZ: <strong>${used} (${usedPct}%)</strong></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <span style="width:10px;height:10px;background:#ff7b4b;border-radius:2px"></span>
+      <span>Receberam e não usaram: <strong>${unused} (${unusedPct}%)</strong></span>
+    </div>
+  `;
+
+  container.append(svg, legend);
+}
+
+function renderHourlyChart(hourly) {
+  const container = $('hourlyChartContainer');
+  if (!container) return;
+  container.replaceChildren();
+
+  const maxVal = Math.max(1, ...hourly.map(h => h.count));
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("width", "100%");
+  svg.setAttribute("height", "120");
+  svg.setAttribute("viewBox", "0 0 720 120");
+
+  const chartHeight = 80;
+  const colW = 720 / 24;
+
+  hourly.forEach((h, i) => {
+    const barH = (h.count / maxVal) * chartHeight;
+    const x = i * colW + 4;
+    const y = chartHeight - barH + 15;
+
+    const rect = document.createElementNS(svgNS, "rect");
+    rect.setAttribute("x", x);
+    rect.setAttribute("y", y);
+    rect.setAttribute("width", colW - 8);
+    rect.setAttribute("height", Math.max(1, barH));
+    rect.setAttribute("fill", h.count > 0 ? "#44d99e" : "#25212f");
+    rect.setAttribute("rx", "2");
+
+    const title = document.createElementNS(svgNS, "title");
+    title.textContent = `${h.hour}h: ${h.count} entrada(s)`;
+    rect.appendChild(title);
+
+    const text = document.createElementNS(svgNS, "text");
+    text.setAttribute("x", x + (colW - 8) / 2);
+    text.setAttribute("y", "110");
+    text.setAttribute("text-anchor", "middle");
+    text.setAttribute("fill", "#8d8795");
+    text.setAttribute("font-size", "9");
+    text.textContent = `${h.hour}h`;
+
+    svg.appendChild(rect);
+    svg.appendChild(text);
+  });
+
+  container.appendChild(svg);
+}
+
+function renderReportDailyTable(daily) {
+  const body = $('reportDailyBody');
+  if (!body) return;
+  body.replaceChildren();
+
+  for (const d of daily) {
+    const row = node('tr');
+    row.append(
+      node('td', '', d.date),
+      node('td', '', d.issued.toLocaleString()),
+      node('td', '', d.admissions.toLocaleString()),
+      node('td', '', d.unused.toLocaleString()),
+      node('td', '', `${d.conversion_rate}%`)
+    );
+    body.append(row);
+  }
+  if (!daily.length) {
+    const row = node('tr');
+    const cell = node('td', '', 'Nenhuma movimentação no período.');
+    cell.colSpan = 5;
+    row.append(cell);
+    body.append(row);
+  }
+}
+
+function renderReportPartnersTable(partners) {
+  const body = $('reportPartnersBody');
+  if (!body) return;
+  body.replaceChildren();
+
+  for (const p of partners) {
+    const row = node('tr');
+    row.append(
+      node('td', '', p.origin_name || 'Sem parceiro'),
+      node('td', '', p.issued.toLocaleString()),
+      node('td', '', p.admissions.toLocaleString()),
+      node('td', '', p.unused.toLocaleString()),
+      node('td', '', `${p.conversion_rate}%`)
+    );
+    body.append(row);
+  }
+  if (!partners.length) {
+    const row = node('tr');
+    const cell = node('td', '', 'Nenhum estabelecimento com cartões emitidos.');
+    cell.colSpan = 5;
+    row.append(cell);
+    body.append(row);
+  }
+}
+
+function exportReportCsv() {
+  if (!currentReportData) return;
+  const rows = [
+    ["RELATORIO DE ENTRADAS E CARTOES - VIBZ MUSIC BAR"],
+    ["Emitido em", new Date().toLocaleString()],
+    [],
+    ["RESUMO DO PERIODO"],
+    ["Total Cartoes Emitidos", currentReportData.summary.total_issued],
+    ["Total Entradas Realizadas", currentReportData.summary.total_admissions],
+    ["Receberam e Nao Usaram", currentReportData.summary.total_unused],
+    ["Taxa de Presenca", `${currentReportData.summary.conversion_rate}%`],
+    [],
+    ["MOVIMENTACAO DIARIA"],
+    ["Data", "Cartoes Entregues", "Entradas Confirmadas", "Nao Utilizados", "Taxa Conversao %"]
+  ];
+
+  for (const d of currentReportData.daily || []) {
+    rows.push([d.date, d.issued, d.admissions, d.unused, `${d.conversion_rate}%`]);
+  }
+
+  rows.push([]);
+  rows.push(["PERFORMANCE POR PARCEIRO / ORIGEM"]);
+  rows.push(["Parceiro", "Cartoes Emitidos", "Entradas Realizadas", "Nao Usados", "Taxa Comparecimento %"]);
+
+  for (const p of currentReportData.partners || []) {
+    rows.push([p.origin_name, p.issued, p.admissions, p.unused, `${p.conversion_rate}%`]);
+  }
+
+  const csvContent = "\ufeff" + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csvContent], {type: "text/csv;charset=utf-8;"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `vibz-relatorio-entradas-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// Fallback manual na leitura de QR
+$('toggleManualCode')?.addEventListener('click', () => {
+  const form = $('manualLookupForm');
+  form.hidden = !form.hidden;
+  if (!form.hidden) $('manualQrInput').focus();
+});
+$('manualLookupForm')?.addEventListener('submit', async (event) => {
   event.preventDefault();
-  try { await lookupQr($('qrInput').value); } catch (error) { notice(error.message, 'error'); }
+  const val = $('manualQrInput').value.trim();
+  if (!val) return;
+  try {
+    await lookupQr(val);
+    $('manualQrInput').value = '';
+  } catch (err) {
+    notice(err.message, 'error');
+  }
 });
+
+$('printCards').addEventListener('click', () => window.print());
+$('exportGrafica').addEventListener('click', () => exportForPrint());
+$('exportRecentGrafica')?.addEventListener('click', () => {
+  const tokens = currentCardsList.map(c => c.token).filter(Boolean);
+  if (!tokens.length) { notice('Nenhum cartão nesta página para exportar.', 'error'); return; }
+  exportForPrint(tokens);
+});
+$('refreshCards').addEventListener('click', () => refreshCards().catch((error) => notice(error.message, 'error')));
+$('cardsPrev').addEventListener('click', () => { cardsPage--; refreshCards().catch((error) => notice(error.message, 'error')); });
+$('cardsNext').addEventListener('click', () => { cardsPage++; refreshCards().catch((error) => notice(error.message, 'error')); });
+
+$('refreshScannedCards')?.addEventListener('click', () => refreshScannedCards().catch((error) => notice(error.message, 'error')));
+$('scannedPrev')?.addEventListener('click', () => { scannedPage--; refreshScannedCards().catch((error) => notice(error.message, 'error')); });
+$('scannedNext')?.addEventListener('click', () => { scannedPage++; refreshScannedCards().catch((error) => notice(error.message, 'error')); });
+
+$('exportReportCsv')?.addEventListener('click', exportReportCsv);
+$('printReportBtn')?.addEventListener('click', () => window.print());
+$('refreshReportsBtn')?.addEventListener('click', () => refreshReports().catch((error) => notice(error.message, 'error')));
+$('reportPeriod')?.addEventListener('change', () => refreshReports().catch((error) => notice(error.message, 'error')));
+$('reportOriginFilter')?.addEventListener('change', () => refreshReports().catch((error) => notice(error.message, 'error')));
+
+$('originsPrev').addEventListener('click', () => { originsPage--; refreshOrigins().catch((error) => notice(error.message, 'error')); });
+$('originsNext').addEventListener('click', () => { originsPage++; refreshOrigins().catch((error) => notice(error.message, 'error')); });
+$('usersPrev').addEventListener('click', () => { usersPage--; refreshUsers().catch((error) => notice(error.message, 'error')); });
+$('usersNext').addEventListener('click', () => { usersPage++; refreshUsers().catch((error) => notice(error.message, 'error')); });
 $('startCamera').addEventListener('click', () => startCamera().catch((error) => notice(error.message, 'error')));
 $('stopCamera').addEventListener('click', stopCamera);
 window.addEventListener('pagehide', stopCamera);
 
 api('session').then(showLoggedIn).catch(() => showLoggedOut());
+

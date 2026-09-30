@@ -5,6 +5,7 @@ Sistema privado do VIBZ Tourist Pass. O backend é Python/FastAPI com SQLite; n�
 ## O que faz
 
 - Login local com senha Argon2id, sessão HttpOnly/Secure e proteção CSRF.
+- Administradores podem cadastrar usuários pelo painel, escolhendo acesso de administrador ou operador. Novas senhas exigem no mínimo 12 caracteres; o hash nunca é devolvido pela API.
 - Administradores cadastram origens e emitem lotes de até 100 cartões por vez.
 - O número visível é sequencial (`VIBZ-000001` etc.). Cada QR contém somente uma URL com token aleatório de 192 bits, sem nome, CPF ou origem.
 - Operadores e administradores consultam a origem ao ler o QR e vinculam a pulseira ao liberar a entrada.
@@ -45,9 +46,13 @@ O login limita tentativas por IP durante dez minutos. Sessões duram oito horas.
 | `POST /api/login` | público | cria sessão por usuário e senha |
 | `GET /api/session` | equipe | restaura sessão e token CSRF |
 | `POST /api/logout` | equipe | revoga sessão |
+| `GET/POST /api/users` | admin | lista paginada/cadastra usuários |
 | `GET/POST /api/origins` | equipe/admin | lista paginada/cadastra origens |
 | `GET /api/origins/options` | equipe | origens ativas e locais comerciais para seleção de emissão |
-| `GET/POST /api/cards` | equipe/admin | lista paginada/emite cartões |
+| `GET/POST /api/cards` | equipe/admin | lista paginada/emite cartões (suporta ?status=redeemed) |
+| `GET /api/cards/{token}/card.png` | equipe | gera imagem PNG completa montada para gráfica |
+| `POST /api/cards/export.zip` | equipe | download do lote completo (PNGs, PDF multipágina, SVGs e CSV) |
+| `GET /api/reports/admissions` | equipe | relatório diário de entradas, conversão e horários de pico |
 | `GET /api/partners` | equipe | busca e filtra base comercial paginada |
 | `PATCH /api/partners/{id}` | admin | atualiza contatos, prioridade e status |
 | `POST /api/lookup` | equipe | identifica QR e origem |
@@ -55,3 +60,5 @@ O login limita tentativas por IP durante dez minutos. Sessões duram oito horas.
 | `GET /p/{token}` | público | página genérica sem dados do cartão |
 
 O Nginx remove o prefixo `/vibz-admin/` ao enviar ao FastAPI. Todas as mutações autenticadas exigem `X-CSRF-Token` devolvido no login/sessão. Não exponha a porta 8792 publicamente.
+
+O painel e os arquivos estáticos de administração usam `Cache-Control: no-store` e um identificador de versão nas URLs de CSS/JS para evitar que navegadores mantenham uma interface antiga após o deploy. A interface inclui abas para leitura de QR, emissão de lotes com prévia do cartão completo, consulta de cartões emitidos, listagem exclusiva de cartões lidos (entradas confirmadas) e relatórios operacionais completos com gráficos.

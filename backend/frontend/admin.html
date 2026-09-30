@@ -5,10 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#0b0b12">
   <meta name="robots" content="noindex,nofollow">
-  <title>vibz-admin · Tourist Pass</title>
-  <link rel="stylesheet" href="../static/admin.css">
+  <link rel="stylesheet" href="../static/admin.css?v=20260930-v5-reports">
   <script src="../static/vendor/jsQR.js" defer></script>
-  <script type="module" src="../static/admin.js"></script>
+  <script type="module" src="../static/admin.js?v=20260930-v5-reports"></script>
 </head>
 <body>
   <header class="topbar">
@@ -34,19 +33,30 @@
       <nav class="tabs" aria-label="Seções do vibz-admin">
         <button class="tab active" data-tab="scan">Ler QR</button>
         <button class="tab" data-tab="issue">Gerar cartões</button>
-        <button class="tab" data-tab="cards">Cartões recentes</button>
+        <button class="tab" data-tab="cards">Cartões emitidos</button>
+        <button class="tab" data-tab="scanned">Cartões lidos</button>
+        <button class="tab" data-tab="reports">Relatórios</button>
         <button class="tab admin-only" data-tab="origins">Origens</button>
         <button class="tab" data-tab="partners">Estabelecimentos</button>
+        <button class="tab admin-only" data-tab="users">Usuários</button>
       </nav>
       <p id="notice" class="message" role="status" aria-live="polite"></p>
 
       <section id="scanTab" class="tab-panel">
-        <div class="panel-head"><div><h2>Leitura na entrada</h2><p>Escaneie o QR ou cole o código lido por um leitor USB.</p></div></div>
+        <div class="panel-head"><div><h2>Leitura na entrada</h2><p>Aponte a câmera para o QR Code — a leitura é automática.</p></div></div>
         <div class="two-col">
           <div class="panel">
             <div class="camera-frame"><video id="camera" autoplay muted playsinline hidden></video><div id="cameraPlaceholder">Câmera desligada</div></div>
             <div class="button-row"><button id="startCamera" class="primary" type="button">Abrir câmera</button><button id="stopCamera" type="button">Parar câmera</button></div>
-            <form id="lookupForm" class="stack"><label>QR ou código<input id="qrInput" required autocomplete="off" placeholder="Cole a URL ou o token do cartão"></label><button type="submit">Identificar cartão</button></form>
+            <div style="margin-top:12px;border-top:1px solid #ffffff1a;padding-top:10px">
+              <button id="toggleManualCode" type="button" class="text-button" style="padding:0;font-size:12px">Digitar código ou leitor USB ▼</button>
+              <form id="manualLookupForm" style="margin-top:8px" hidden>
+                <div style="display:flex;gap:8px">
+                  <input id="manualQrInput" placeholder="Cole a URL ou token do cartão" autocomplete="off" style="flex:1">
+                  <button type="submit">Identificar</button>
+                </div>
+              </form>
+            </div>
           </div>
           <div id="cardResult" class="panel result-panel"><div class="empty-state">O cartão identificado aparecerá aqui com origem, status e número.</div></div>
         </div>
@@ -55,21 +65,208 @@
       <section id="issueTab" class="tab-panel" hidden>
         <div class="panel-head"><div><h2>Gerar cartões sequenciais</h2><p>Cada cartão recebe número próprio e QR impossível de adivinhar.</p></div></div>
         <form id="issueForm" class="panel form-grid admin-only">
-          <label>Origem<select id="issueOrigin" aria-describedby="originHelp" required><option value="">Selecione uma origem</option></select></label>
+          <label>Origem<input id="originSearch" type="search" placeholder="Busque pelo nome do local" autocomplete="off"><select id="issueOrigin" aria-describedby="originHelp originSelectedInfo" required><option value="">Carregando origens...</option></select><small id="originSelectedInfo"></small></label>
           <label>Quantidade (1 a 100)<input id="issueCount" type="number" min="1" max="100" value="1" required></label>
           <label>Válido até (opcional)<input id="issueExpiry" type="date"></label>
-          <button type="submit" class="primary">Gerar lote</button>
+          <button id="issueSubmitBtn" type="submit" class="primary">Gerar lote</button>
         </form>
-        <p id="originHelp" class="hint">A lista inclui estabelecimentos ainda não contatados. Confirme a distribuição com o local antes de emitir cartões; a origem será cadastrada na primeira emissão.</p>
+        <div id="originPartnerManager" class="panel" style="margin-top:14px;background:#181622;border:1px solid #ff7b4b44;" hidden>
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
+            <div>
+              <strong id="opmName" style="font-size:17px;color:#fff;display:block"></strong>
+              <span id="opmCategory" style="color:#d0bdca;font-size:13px"></span> · 
+              <span id="opmStatusBadge" class="badge"></span>
+            </div>
+            <div class="button-row" style="margin:0">
+              <button id="opmPromoteBtn" type="button" class="primary" style="padding:8px 14px;font-size:13px">Contratar parceiro (1 clique)</button>
+              <button id="opmEditBtn" type="button" style="padding:8px 14px;font-size:13px">Editar dados</button>
+            </div>
+          </div>
+        </div>
+        <div class="button-row"><button id="refreshOriginChoices" type="button">Atualizar origens</button><p id="originHelp" class="hint" role="status">Carregando origens...</p></div>
         <div id="issueOperatorNote" class="panel" hidden>Somente administradores podem gerar cartões.</div>
-        <div id="issuedActions" class="button-row" hidden><button id="printCards" type="button">Imprimir cartões</button><span id="issuedCount"></span></div>
+        <div id="issuedActions" class="button-row" hidden><button id="printCards" type="button">Imprimir cartões</button><button id="exportGrafica" type="button">Exportar para gráfica (ZIP) ↓</button><span id="issuedCount"></span></div>
         <div id="issuedCards" class="print-sheet"></div>
       </section>
 
       <section id="cardsTab" class="tab-panel" hidden>
-        <div class="panel-head"><div><h2>Cartões recentes</h2><p>Consulte os últimos números e identifique a origem de cada um.</p></div><button id="refreshCards" type="button">Atualizar</button></div>
+        <div class="panel-head">
+          <div><h2>Cartões recentes</h2><p>Consulte os últimos números e identifique a origem de cada um.</p></div>
+          <div class="button-row" style="margin:0">
+            <button id="exportRecentGrafica" type="button">Exportar página para gráfica (ZIP) ↓</button>
+            <button id="refreshCards" type="button">Atualizar</button>
+          </div>
+        </div>
         <div class="panel table-wrap"><table><thead><tr><th>Cartão</th><th>Origem</th><th>Status</th><th>Emitido</th><th>Ação</th></tr></thead><tbody id="cardsBody"></tbody></table></div>
         <div class="pager"><button id="cardsPrev" type="button">Anterior</button><span id="cardsPage"></span><button id="cardsNext" type="button">Próxima</button></div>
+      </section>
+
+      <section id="scannedTab" class="tab-panel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>Cartões lidos (Entradas confirmadas)</h2>
+            <p>Lista cronológica de todos os clientes e turistas que tiveram a entrada validada no VIBZ.</p>
+          </div>
+          <div class="button-row" style="margin:0">
+            <button id="refreshScannedCards" type="button" class="primary">Atualizar entradas</button>
+          </div>
+        </div>
+        <div class="panel table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Cartão</th>
+                <th>Origem / Parceiro</th>
+                <th>Data e Hora da Entrada</th>
+                <th>Pulseira / Observação</th>
+                <th>Operador</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="scannedCardsBody"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button id="scannedPrev" type="button">Anterior</button>
+          <span id="scannedPage"></span>
+          <button id="scannedNext" type="button">Próxima</button>
+        </div>
+      </section>
+
+      <section id="reportsTab" class="tab-panel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>Relatórios de Entradas e Cartões</h2>
+            <p>Acompanhe o volume diário de entradas, cartões entregues e taxa de conversão dos parceiros.</p>
+          </div>
+          <div class="button-row" style="margin:0">
+            <button id="exportReportCsv" type="button">Exportar CSV</button>
+            <button id="printReportBtn" type="button">Imprimir Relatório</button>
+            <button id="refreshReportsBtn" type="button" class="primary">Atualizar</button>
+          </div>
+        </div>
+
+        <div class="panel report-filters" style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:20px">
+          <label style="min-width:180px">Período
+            <select id="reportPeriod">
+              <option value="today">Hoje</option>
+              <option value="7">Últimos 7 dias</option>
+              <option value="15">Últimos 15 dias</option>
+              <option value="30" selected>Últimos 30 dias</option>
+              <option value="90">Últimos 90 dias</option>
+              <option value="365">Tudo (1 ano)</option>
+            </select>
+          </label>
+          <label style="min-width:240px;flex:1">Filtrar por Parceiro / Origem
+            <select id="reportOriginFilter">
+              <option value="all">Todos os parceiros / origens</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- Indicadores Principais (KPIs) -->
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <span class="kpi-icon">🎟️</span>
+            <div class="kpi-content">
+              <span class="kpi-label">Cartões Emitidos</span>
+              <strong id="kpiTotalIssued" class="kpi-value">0</strong>
+              <small id="kpiTodayIssued" class="kpi-sub">0 hoje</small>
+            </div>
+          </div>
+          <div class="kpi-card highlight-green">
+            <span class="kpi-icon">🚪</span>
+            <div class="kpi-content">
+              <span class="kpi-label">Entradas Realizadas</span>
+              <strong id="kpiTotalAdmissions" class="kpi-value">0</strong>
+              <small id="kpiTodayAdmissions" class="kpi-sub">0 hoje</small>
+            </div>
+          </div>
+          <div class="kpi-card highlight-orange">
+            <span class="kpi-icon">⏳</span>
+            <div class="kpi-content">
+              <span class="kpi-label">Receberam e Não Usaram</span>
+              <strong id="kpiTotalUnused" class="kpi-value">0</strong>
+              <small id="kpiTodayUnused" class="kpi-sub">0 hoje</small>
+            </div>
+          </div>
+          <div class="kpi-card highlight-purple">
+            <span class="kpi-icon">📈</span>
+            <div class="kpi-content">
+              <span class="kpi-label">Taxa de Presença / Conversão</span>
+              <strong id="kpiConversionRate" class="kpi-value">0%</strong>
+              <small id="kpiTodayConvRate" class="kpi-sub">0% hoje</small>
+            </div>
+          </div>
+        </div>
+
+        <!-- Seção de Gráficos -->
+        <div class="charts-grid" style="margin-top:24px;display:grid;grid-template-columns:minmax(320px,2fr) minmax(280px,1fr);gap:20px">
+          <!-- Gráfico Diário de Entradas vs Cartões -->
+          <div class="panel chart-panel">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+              <h3 style="margin:0;font-size:17px">Movimentação Diária: Entradas vs Cartões</h3>
+              <div class="chart-legend" style="display:flex;gap:12px;font-size:12px">
+                <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:#44d99e;border-radius:2px"></span> Entradas</span>
+                <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:#ff7b4b;border-radius:2px"></span> Emitidos</span>
+                <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:#7e7492;border-radius:2px"></span> Não Usados</span>
+              </div>
+            </div>
+            <div id="dailyChartContainer" class="chart-canvas-box" style="min-height:240px;position:relative"></div>
+          </div>
+
+          <!-- Gráfico de Status Proporcional -->
+          <div class="panel chart-panel">
+            <h3 style="margin:0 0 12px;font-size:17px">Proporção Geral de Uso</h3>
+            <div id="statusChartContainer" class="chart-canvas-box" style="min-height:240px;position:relative;display:flex;flex-direction:column;justify-content:center;align-items:center"></div>
+          </div>
+        </div>
+
+        <!-- Gráfico de Horários de Entrada de Hoje -->
+        <div class="panel chart-panel" style="margin-top:20px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <h3 style="margin:0;font-size:17px">Horários de Entrada (Hoje - 00h às 23h)</h3>
+            <small style="color:#b8b4bf">Fluxo de clientes por faixa de horário no VIBZ</small>
+          </div>
+          <div id="hourlyChartContainer" class="chart-canvas-box" style="min-height:140px;position:relative"></div>
+        </div>
+
+        <!-- Tabelas Detalhadas -->
+        <div style="margin-top:28px">
+          <div class="panel-head"><div><h3>Detalhamento Diário</h3><p>Histórico dia a dia de cartões emitidos e entradas confirmadas.</p></div></div>
+          <div class="panel table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Data</th>
+                  <th>Cartões Entregues</th>
+                  <th>Entradas Confirmadas</th>
+                  <th>Não Utilizados</th>
+                  <th>Taxa de Conversão</th>
+                </tr>
+              </thead>
+              <tbody id="reportDailyBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style="margin-top:28px">
+          <div class="panel-head"><div><h3>Performance por Parceiro / Estabelecimento</h3><p>Descubra quais parceiros trazem mais público para o VIBZ.</p></div></div>
+          <div class="panel table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Parceiro / Estabelecimento</th>
+                  <th>Cartões Entregues</th>
+                  <th>Entradas no VIBZ</th>
+                  <th>Não Utilizados</th>
+                  <th>Taxa de Presença</th>
+                </tr>
+              </thead>
+              <tbody id="reportPartnersBody"></tbody>
+            </table>
+          </div>
+        </div>
       </section>
 
       <section id="originsTab" class="tab-panel" hidden>
@@ -110,6 +307,20 @@
           </div>
           <div class="button-row"><button type="submit" class="primary">Salvar estabelecimento</button><button id="cancelPartnerEdit" type="button">Cancelar</button></div>
         </form>
+      </section>
+
+      <section id="usersTab" class="tab-panel" hidden>
+        <div class="panel-head"><div><h2>Usuários</h2><p>Cadastre contas para a equipe. Somente administradores acessam esta seção.</p></div></div>
+        <form id="userForm" class="panel user-form">
+          <label>Usuário<input id="newUsername" required minlength="3" maxlength="40" pattern="[A-Za-z0-9_.-]+" autocomplete="off" placeholder="nome.usuario"></label>
+          <label>Senha inicial<input id="newPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password" placeholder="Mínimo 12 caracteres"></label>
+          <label>Confirmar senha<input id="confirmPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
+          <label>Permissão<select id="newRole" required><option value="operator">Operador: lê QR e registra entrada</option><option value="admin">Administrador: acesso completo</option></select></label>
+          <button type="submit" class="primary">Cadastrar usuário</button>
+        </form>
+        <p class="hint">A senha é guardada somente como hash. Informe a senha inicial ao novo usuário por um canal privado.</p>
+        <div class="panel table-wrap"><table><thead><tr><th>Usuário</th><th>Permissão</th><th>Status</th><th>Criado em</th></tr></thead><tbody id="usersBody"></tbody></table></div>
+        <div class="pager"><button id="usersPrev" type="button">Anterior</button><span id="usersPage"></span><button id="usersNext" type="button">Próxima</button></div>
       </section>
     </section>
   </main>
