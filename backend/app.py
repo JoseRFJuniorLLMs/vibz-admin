@@ -13,7 +13,7 @@ from pathlib import Path
 import qrcode
 import qrcode.image.svg
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -31,7 +31,7 @@ class Settings:
     db_path: Path
     public_base_url: str
     secure_cookie: bool = True
-    cookie_path: str = "/vibz"
+    cookie_path: str = "/vibz-admin"
     session_seconds: int = 8 * 3600
 
     @classmethod
@@ -39,7 +39,7 @@ class Settings:
         return cls(
             db_path=Path(os.getenv("VIBZ_DB_PATH", str(Path(__file__).with_name("data") / "vibz.sqlite3"))),
             public_base_url=os.getenv(
-                "VIBZ_PUBLIC_BASE_URL", "https://35.247.217.66.nip.io/vibz/p"
+                "VIBZ_PUBLIC_BASE_URL", "https://35.247.217.66.nip.io/vibz-admin/p"
             ).rstrip("/"),
         )
 
@@ -208,8 +208,11 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
             raise HTTPException(404)
         return FileResponse(FRONTEND / "pass.html")
 
-    @app.get("/admin/")
     @app.get("/")
+    def root_page():
+        return RedirectResponse("admin/", status_code=307)
+
+    @app.get("/admin/")
     def admin_page():
         return FileResponse(FRONTEND / "admin.html")
 

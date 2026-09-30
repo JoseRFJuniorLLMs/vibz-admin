@@ -15,4 +15,4 @@ python3 -m venv .venv
 node --check backend/frontend/admin.js
 ```
 
-O serviço de produção foi preparado para `https://35.247.217.66.nip.io/vibz/`. O acesso HTTPS pelo IP puro tem certificado incompatível.
+O serviço de produção usa `https://35.247.217.66.nip.io/vibz-admin/`. O acesso HTTPS pelo IP puro ainda apresenta certificado incompatível.

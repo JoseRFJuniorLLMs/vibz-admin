@@ -18,7 +18,7 @@ class ApiTests(unittest.TestCase):
         self.store.create_user("portaria", hash_password("Another-secret-456"), "operator")
         settings = Settings(
             db_path=self.store.path,
-            public_base_url="https://35.247.217.66.nip.io/vibz/p",
+            public_base_url="https://35.247.217.66.nip.io/vibz-admin/p",
             secure_cookie=False,
             cookie_path="/",
         )
@@ -29,6 +29,12 @@ class ApiTests(unittest.TestCase):
         response = self.client.post("/api/login", json={"username": username, "password": password})
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()["csrf_token"]
+
+    def test_root_links_to_admin_page(self):
+        root = self.client.get("/", follow_redirects=False)
+        self.assertEqual(root.status_code, 307)
+        self.assertEqual(root.headers["location"], "admin/")
+        self.assertEqual(self.client.get("/admin/").status_code, 200)
 
     def test_login_csrf_roles_and_redeem(self):
         self.assertEqual(self.client.get("/api/cards").status_code, 401)

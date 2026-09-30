@@ -28,8 +28,8 @@ def install() -> None:
         intended = (HERE / filename).read_text(encoding="utf-8")
         if snippet.exists() and snippet.read_text(encoding="utf-8") != intended:
             raise RuntimeError(f"Snippet VIBZ existente é diferente: {snippet}")
-        if "location /vibz/" in original and include not in original:
-            raise RuntimeError(f"Já existe rota /vibz em {site}; revisão manual necessária")
+        if any(route in original for route in ("location /vibz/", "location /vibz-admin/")) and include not in original:
+            raise RuntimeError(f"Já existe rota VIBZ em {site}; revisão manual necessária")
         if include in original:
             continue
         end = original.rfind("\n}")
@@ -39,7 +39,7 @@ def install() -> None:
         updated = original[:end] + f"\n    # vibz-admin\n    {include}\n" + original[end:]
         changes.append((site, backup, snippet, intended, updated))
     if not changes:
-        print("Nginx já contém as rotas /vibz/")
+        print("Nginx já contém as rotas /vibz-admin/")
         return
     if any(backup.exists() for _, backup, _, _, _ in changes):
         raise RuntimeError("Backup com esse horário já existe; tente novamente após um minuto")
@@ -62,7 +62,7 @@ def install() -> None:
         subprocess.run(["nginx", "-t"], check=False)
         subprocess.run(["systemctl", "reload", "nginx"], check=False)
         raise
-    print("Nginx validado e recarregado para /vibz/")
+    print("Nginx validado e recarregado para /vibz-admin/")
 
 
 if __name__ == "__main__":

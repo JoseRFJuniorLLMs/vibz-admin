@@ -18,7 +18,7 @@ Use Python 3.12+:
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r backend/requirements-dev.txt
-VIBZ_DB_PATH=./data/vibz.sqlite3 VIBZ_PUBLIC_BASE_URL=https://35.247.217.66.nip.io/vibz/p .venv/bin/python -m backend.manage create-admin vibz-admin
+VIBZ_DB_PATH=./data/vibz.sqlite3 VIBZ_PUBLIC_BASE_URL=https://35.247.217.66.nip.io/vibz-admin/p .venv/bin/python -m backend.manage create-admin vibz-admin
 VIBZ_DB_PATH=./data/vibz.sqlite3 .venv/bin/python -m uvicorn backend.app:app --host 127.0.0.1 --port 8792
 .venv/bin/python -m unittest discover -s backend/tests -v
 ```
@@ -31,7 +31,7 @@ Na implantação automatizada, `python -m backend.manage create-admin vibz-admin
 
 No servidor, use `VIBZ_DB_PATH=/var/lib/vibz-admin/cards.sqlite3`. Preserve também os arquivos SQLite `-wal` e `-shm` durante backups; para backup consistente com o serviço ativo, use a API de backup do SQLite (`sqlite3.Connection.backup`) ou pare o serviço antes de copiar. O processo deve ter escrita só em `/var/lib/vibz-admin`. A aplicação HTTP deve escutar apenas em `127.0.0.1`, atrás do Nginx HTTPS.
 
-O QR físico aponta para `VIBZ_PUBLIC_BASE_URL/<token>`; mantenha esse endereço estável depois de imprimir cartões. A URL atual usa o domínio com TLS válido `35.247.217.66.nip.io`. O HTTPS direto para o IP `35.247.217.66` apresenta certificado incompatível e não deve ser usado para login.
+O QR físico aponta para `VIBZ_PUBLIC_BASE_URL/<token>`; mantenha esse endereço estável depois de imprimir cartões. A URL atual usa o domínio com TLS válido `35.247.217.66.nip.io` e o caminho `/vibz-admin/`. O HTTPS direto para o IP `35.247.217.66` apresenta certificado incompatível e não deve ser usado para login.
 
 O login limita tentativas por IP durante dez minutos. Sessões duram oito horas. Roles: `admin` emite cartões e cria origens; `operator` consulta e resgata. A equipe deve guardar as credenciais individualmente, sair ao encerrar o turno e fazer backup periódico do banco.
 
@@ -48,4 +48,4 @@ O login limita tentativas por IP durante dez minutos. Sessões duram oito horas.
 | `POST /api/cards/{token}/redeem` | equipe | registra entrada e pulseira uma vez |
 | `GET /p/{token}` | público | página genérica sem dados do cartão |
 
-O Nginx remove o prefixo `/vibz/` ao enviar ao FastAPI. Todas as mutações autenticadas exigem `X-CSRF-Token` devolvido no login/sessão. Não exponha a porta 8792 publicamente.
+O Nginx remove o prefixo `/vibz-admin/` ao enviar ao FastAPI. Todas as mutações autenticadas exigem `X-CSRF-Token` devolvido no login/sessão. Não exponha a porta 8792 publicamente.
