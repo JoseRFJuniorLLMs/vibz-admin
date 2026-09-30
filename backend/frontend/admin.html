@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0b0b12">
+  <meta name="robots" content="noindex,nofollow">
+  <title>vibz-admin · Tourist Pass</title>
+  <link rel="stylesheet" href="../static/admin.css">
+  <script src="../static/vendor/jsQR.js" defer></script>
+  <script type="module" src="../static/admin.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">V</span><span><strong>vibz-admin</strong><small>TOURIST PASS</small></span></div>
+    <div id="account" class="account" hidden><span id="accountName"></span><button id="logoutButton" class="text-button">Sair</button></div>
+  </header>
+
+  <main class="shell">
+    <section id="loginPanel" class="login-card">
+      <p class="eyebrow">ACESSO RESTRITO</p>
+      <h1>Entre para gerir os cartões</h1>
+      <p>Use a conta criada para sua equipe VIBZ. O QR do turista não contém dados pessoais.</p>
+      <form id="loginForm" class="stack">
+        <label>Usuário<input id="username" autocomplete="username" required placeholder="vibz-admin"></label>
+        <label>Senha<input id="password" type="password" autocomplete="current-password" required></label>
+        <button type="submit" class="primary">Entrar</button>
+      </form>
+      <p id="loginMessage" class="message" role="alert"></p>
+    </section>
+
+    <section id="workspace" hidden>
+      <div class="intro"><div><p class="eyebrow">OPERAÇÃO VIBZ</p><h1>Cartões, origens e entradas</h1></div><span class="online-dot">Sistema privado</span></div>
+      <nav class="tabs" aria-label="Seções do vibz-admin">
+        <button class="tab active" data-tab="scan">Ler QR</button>
+        <button class="tab" data-tab="issue">Gerar cartões</button>
+        <button class="tab" data-tab="cards">Cartões recentes</button>
+        <button class="tab admin-only" data-tab="origins">Origens</button>
+      </nav>
+      <p id="notice" class="message" role="status" aria-live="polite"></p>
+
+      <section id="scanTab" class="tab-panel">
+        <div class="panel-head"><div><h2>Leitura na entrada</h2><p>Escaneie o QR ou cole o código lido por um leitor USB.</p></div></div>
+        <div class="two-col">
+          <div class="panel">
+            <div class="camera-frame"><video id="camera" autoplay muted playsinline hidden></video><div id="cameraPlaceholder">Câmera desligada</div></div>
+            <div class="button-row"><button id="startCamera" class="primary" type="button">Abrir câmera</button><button id="stopCamera" type="button">Parar câmera</button></div>
+            <form id="lookupForm" class="stack"><label>QR ou código<input id="qrInput" required autocomplete="off" placeholder="Cole a URL ou o token do cartão"></label><button type="submit">Identificar cartão</button></form>
+          </div>
+          <div id="cardResult" class="panel result-panel"><div class="empty-state">O cartão identificado aparecerá aqui com origem, status e número.</div></div>
+        </div>
+      </section>
+
+      <section id="issueTab" class="tab-panel" hidden>
+        <div class="panel-head"><div><h2>Gerar cartões sequenciais</h2><p>Cada cartão recebe número próprio e QR impossível de adivinhar.</p></div></div>
+        <form id="issueForm" class="panel form-grid admin-only">
+          <label>Origem<select id="issueOrigin" required><option value="">Selecione uma origem</option></select></label>
+          <label>Quantidade (1 a 100)<input id="issueCount" type="number" min="1" max="100" value="1" required></label>
+          <label>Válido até (opcional)<input id="issueExpiry" type="date"></label>
+          <button type="submit" class="primary">Gerar lote</button>
+        </form>
+        <div id="issueOperatorNote" class="panel" hidden>Somente administradores podem gerar cartões.</div>
+        <div id="issuedActions" class="button-row" hidden><button id="printCards" type="button">Imprimir cartões</button><span id="issuedCount"></span></div>
+        <div id="issuedCards" class="print-sheet"></div>
+      </section>
+
+      <section id="cardsTab" class="tab-panel" hidden>
+        <div class="panel-head"><div><h2>Cartões recentes</h2><p>Consulte os últimos números e identifique a origem de cada um.</p></div><button id="refreshCards" type="button">Atualizar</button></div>
+        <div class="panel table-wrap"><table><thead><tr><th>Cartão</th><th>Origem</th><th>Status</th><th>Emitido</th><th>Ação</th></tr></thead><tbody id="cardsBody"></tbody></table></div>
+      </section>
+
+      <section id="originsTab" class="tab-panel" hidden>
+        <div class="panel-head"><div><h2>Origens dos cartões</h2><p>Cadastre o local que receberá o lote antes de emitir.</p></div></div>
+        <form id="originForm" class="panel form-grid">
+          <label>Nome do parceiro ou ponto<input id="originName" maxlength="120" required placeholder="Pousada Sol"></label>
+          <label>Tipo de origem<select id="originCategory" required><option value="">Selecione</option><option>Hotel / Pousada</option><option>Hostel</option><option>Restaurante / Bar</option><option>Agência / Passeio</option><option>Rodoviária</option><option>Distribuição de rua</option><option>Outro</option></select></label>
+          <button type="submit" class="primary">Cadastrar origem</button>
+        </form>
+        <div id="originList" class="origin-list"></div>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,25 @@
+[Unit]
+Description=vibz-admin Tourist Pass
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=web2a
+Group=web2a
+WorkingDirectory=/opt/vibz-admin
+StateDirectory=vibz-admin
+Environment=VIBZ_DB_PATH=/var/lib/vibz-admin/cards.sqlite3
+Environment=VIBZ_PUBLIC_BASE_URL=https://35.247.217.66.nip.io/vibz/p
+ExecStart=/opt/vibz-admin/.venv/bin/python -m uvicorn backend.app:app --host 127.0.0.1 --port 8792 --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/vibz-admin
+
+[Install]
+WantedBy=multi-user.target

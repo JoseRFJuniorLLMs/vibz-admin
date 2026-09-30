@@ -1,0 +1,9 @@
+.firebase/
+firebase-debug.log
+.DS_Store
+Thumbs.db
+*.log
+backend/data/
+backend/.venv/
+__pycache__/
+.pytest_cache/
