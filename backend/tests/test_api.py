@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from backend.app import Settings, create_app
 from backend.auth import hash_password
 from backend.store import Store
+from backend.seed_partners import entries
 
 
 class ApiTests(unittest.TestCase):
@@ -86,6 +87,36 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 401)
         locked = self.client.post("/api/login", json={"username": "vibz-admin", "password": "A-strong-secret-123"})
         self.assertEqual(locked.status_code, 429)
+
+    def test_partner_listing_and_admin_updates(self):
+        self.store.seed_partners(entries())
+        self.assertEqual(self.client.get("/api/partners").status_code, 401)
+        csrf = self.login()
+        page = self.client.get("/api/partners?page=2&page_size=20")
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual((page.json()["total"], page.json()["pages"], len(page.json()["items"])), (130, 7, 20))
+        filtered = self.client.get("/api/partners?category=praia&q=Tawa")
+        self.assertEqual(filtered.json()["total"], 1)
+        identifier = filtered.json()["items"][0]["id"]
+        self.assertEqual(self.client.patch(f"/api/partners/{identifier}", json={"status": "parceiro"}).status_code, 403)
+        self.assertEqual(self.client.patch(f"/api/partners/{identifier}", json={"status": "unknown"}, headers={"X-CSRF-Token": csrf}).status_code, 422)
+        updated = self.client.patch(f"/api/partners/{identifier}", json={"status": "interessado", "manager": "Ana"}, headers={"X-CSRF-Token": csrf})
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["status"], "interessado")
+        self.assertEqual(self.client.get("/api/partners?status=parceiro").json()["total"], 0)
+        self.assertEqual(self.client.get("/api/partners?status=interessado").json()["total"], 1)
+        self.assertEqual(self.client.get("/api/partners?page=0").status_code, 422)
+
+    def test_paged_cards_keep_origin_options_complete(self):
+        csrf = self.login()
+        for number in range(23):
+            self.store.create_origin(f"Origem {number:02d}", "Pousada", "admin")
+        self.assertEqual(self.client.get("/api/origins?page=2&page_size=20").json()["total"], 23)
+        self.assertEqual(len(self.client.get("/api/origins/options").json()), 23)
+        origin_id = self.client.get("/api/origins/options").json()[0]["id"]
+        self.assertEqual(self.client.post("/api/cards", json={"origin_id": origin_id, "count": 21}, headers={"X-CSRF-Token": csrf}).status_code, 201)
+        last = self.client.get("/api/cards?page=2&page_size=20").json()
+        self.assertEqual((last["total"], last["pages"], len(last["items"])), (21, 2, 1))
 
 
 if __name__ == "__main__":

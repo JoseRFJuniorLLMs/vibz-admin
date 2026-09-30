@@ -2,6 +2,10 @@ const $ = (id) => document.getElementById(id);
 const apiRoot = new URL('../api/', window.location.href);
 let session = null;
 let origins = [];
+let cardsPage = 1;
+let originsPage = 1;
+let partnersPage = 1;
+let selectedPartner = null;
 let cameraStream = null;
 let scanActive = false;
 let scanBusy = false;
@@ -67,12 +71,24 @@ function switchTab(name) {
     section.hidden = section.id !== `${name}Tab`;
   }
   if (name !== 'scan') stopCamera();
+  if (name === 'partners') refreshPartners().catch((error) => notice(error.message, 'error'));
   notice('');
 }
 
+function renderPager(prefix, result) {
+  const pageCount = Math.max(1, result.pages);
+  $(`${prefix}Page`).textContent = `${result.total} registro(s) · página ${result.page} de ${pageCount}`;
+  $(`${prefix}Prev`).disabled = result.page <= 1;
+  $(`${prefix}Next`).disabled = result.page >= pageCount;
+}
+
 async function refreshOrigins() {
-  origins = await api('origins');
+  const [result, options] = await Promise.all([
+    api(`origins?page=${originsPage}&page_size=20`), api('origins/options'),
+  ]);
+  origins = options;
   const select = $('issueOrigin');
+  const selected = select.value;
   select.replaceChildren(node('option', '', 'Selecione uma origem'));
   select.firstChild.value = '';
   const list = $('originList');
@@ -81,10 +97,15 @@ async function refreshOrigins() {
     const option = node('option', '', origin.name);
     option.value = origin.id;
     select.append(option);
+  }
+  select.value = origins.some((origin) => origin.id === selected) ? selected : '';
+  for (const origin of result.items) {
     const card = node('div', 'origin-card');
     card.append(node('strong', '', origin.name), node('small', '', origin.category));
     list.append(card);
   }
+  if (!result.items.length) list.append(node('p', '', 'Nenhuma origem cadastrada.'));
+  renderPager('origins', result);
 }
 
 function formatDate(value) {
@@ -100,7 +121,8 @@ function statusLabel(card) {
 }
 
 async function refreshCards() {
-  const cards = await api('cards?limit=50');
+  const result = await api(`cards?page=${cardsPage}&page_size=20`);
+  const cards = result.items;
   const body = $('cardsBody');
   body.replaceChildren();
   for (const card of cards) {
@@ -128,6 +150,56 @@ async function refreshCards() {
     row.append(cell);
     body.append(row);
   }
+  renderPager('cards', result);
+}
+
+const categoryLabels = {hospedagem: 'Hospedagem', gastronomia: 'Gastronomia', praia: 'Praia'};
+const partnerStatusLabels = {nao_contatado: 'Não contatado', contatado: 'Contatado', interessado: 'Interessado', parceiro: 'Parceiro confirmado'};
+const priorityLabels = {baixa: 'Baixa', media: 'Média', alta: 'Alta'};
+
+async function refreshPartners() {
+  const params = new URLSearchParams({page: String(partnersPage), page_size: '20'});
+  if ($('partnerQuery').value.trim()) params.set('q', $('partnerQuery').value.trim());
+  if ($('partnerCategory').value) params.set('category', $('partnerCategory').value);
+  if ($('partnerStatus').value) params.set('status', $('partnerStatus').value);
+  const result = await api(`partners?${params}`);
+  const body = $('partnersBody');
+  body.replaceChildren();
+  for (const partner of result.items) {
+    const row = node('tr');
+    const action = node('button', '', 'Ver / editar');
+    action.type = 'button';
+    action.addEventListener('click', () => editPartner(partner));
+    if (session?.role !== 'admin') action.textContent = 'Ver detalhes';
+    const actionCell = node('td');
+    actionCell.append(action);
+    row.append(node('td', '', partner.name), node('td', '', categoryLabels[partner.category]),
+      node('td', '', partnerStatusLabels[partner.status]), node('td', '', priorityLabels[partner.priority]), actionCell);
+    body.append(row);
+  }
+  if (!result.items.length) {
+    const row = node('tr');
+    const cell = node('td', '', 'Nenhum estabelecimento encontrado.');
+    cell.colSpan = 5;
+    row.append(cell);
+    body.append(row);
+  }
+  renderPager('partners', result);
+}
+
+function editPartner(partner) {
+  selectedPartner = partner;
+  const form = $('partnerEdit');
+  $('partnerEditTitle').textContent = partner.name;
+  for (const field of form.elements) {
+    if (field.name && Object.hasOwn(partner, field.name)) {
+      field.value = partner[field.name] ?? '';
+      field.disabled = session?.role !== 'admin';
+    }
+  }
+  form.querySelector('button[type="submit"]').hidden = session?.role !== 'admin';
+  form.hidden = false;
+  form.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
 function renderIssued(cards) {
@@ -294,9 +366,41 @@ $('originForm').addEventListener('submit', async (event) => {
   try {
     await api('origins', {method: 'POST', body: {name: $('originName').value.trim(), category: $('originCategory').value}});
     event.target.reset();
+    originsPage = 1;
     await refreshOrigins();
     notice('Origem cadastrada.', 'success');
   } catch (error) { notice(error.message, 'error'); }
+});
+$('cardsPrev').addEventListener('click', () => { cardsPage--; refreshCards().catch((error) => notice(error.message, 'error')); });
+$('cardsNext').addEventListener('click', () => { cardsPage++; refreshCards().catch((error) => notice(error.message, 'error')); });
+$('originsPrev').addEventListener('click', () => { originsPage--; refreshOrigins().catch((error) => notice(error.message, 'error')); });
+$('originsNext').addEventListener('click', () => { originsPage++; refreshOrigins().catch((error) => notice(error.message, 'error')); });
+$('partnersPrev').addEventListener('click', () => { partnersPage--; refreshPartners().catch((error) => notice(error.message, 'error')); });
+$('partnersNext').addEventListener('click', () => { partnersPage++; refreshPartners().catch((error) => notice(error.message, 'error')); });
+$('partnerFilter').addEventListener('submit', (event) => {
+  event.preventDefault();
+  partnersPage = 1;
+  $('partnerEdit').hidden = true;
+  refreshPartners().catch((error) => notice(error.message, 'error'));
+});
+$('cancelPartnerEdit').addEventListener('click', () => { $('partnerEdit').hidden = true; selectedPartner = null; });
+$('partnerEdit').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!selectedPartner || session?.role !== 'admin') return;
+  const button = event.target.querySelector('button[type="submit"]');
+  button.disabled = true;
+  try {
+    const data = Object.fromEntries(new FormData(event.target).entries());
+    data.estimated_rooms = data.estimated_rooms === '' ? null : Number(data.estimated_rooms);
+    if (data.status === 'parceiro' && selectedPartner.status !== 'parceiro' &&
+        !window.confirm('A parceria foi confirmada com este estabelecimento?')) return;
+    await api(`partners/${encodeURIComponent(selectedPartner.id)}`, {method: 'PATCH', body: data});
+    event.target.hidden = true;
+    selectedPartner = null;
+    await refreshPartners();
+    notice('Estabelecimento atualizado.', 'success');
+  } catch (error) { notice(error.message, 'error'); }
+  finally { button.disabled = false; }
 });
 $('issueForm').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -309,6 +413,7 @@ $('issueForm').addEventListener('submit', async (event) => {
       valid_until: $('issueExpiry').value || null,
     }});
     renderIssued(cards);
+    cardsPage = 1;
     await refreshCards();
     notice(`Lote emitido: ${cards[0].number} a ${cards[cards.length - 1].number}.`, 'success');
   } catch (error) { notice(error.message, 'error'); }

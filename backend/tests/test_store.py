@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from backend.store import Store, StoreError, parse_qr
+from backend.seed_partners import entries
 
 
 class StoreTests(unittest.TestCase):
@@ -56,6 +57,32 @@ class StoreTests(unittest.TestCase):
             self.store.issue(self.origin["id"], 101, None, "admin")
         card = self.store.issue(self.origin["id"], 1, None, "admin")[0]
         self.assertEqual(card["id"], 1)
+
+    def test_partner_seed_is_idempotent_and_keeps_edits(self):
+        self.assertEqual(len(entries()), 130)
+        self.assertEqual(self.store.seed_partners(entries()), 130)
+        first = self.store.list_partners(1, 20)
+        self.assertEqual(first["total"], 130)
+        self.assertEqual(len(first["items"]), 20)
+        self.assertTrue(all(item["status"] == "nao_contatado" for item in first["items"]))
+        identifier = first["items"][0]["id"]
+        self.store.update_partner(identifier, {"status": "contatado", "whatsapp": "22999999999"})
+        self.assertEqual(self.store.seed_partners(entries()), 0)
+        found = self.store.list_partners(1, 20, status="contatado")
+        self.assertEqual(found["total"], 1)
+        self.assertEqual(found["items"][0]["whatsapp"], "22999999999")
+        self.assertEqual(len(self.store.list_partners(7, 20)["items"]), 10)
+        self.assertFalse({item["id"] for item in first["items"]} &
+                         {item["id"] for item in self.store.list_partners(2, 20)["items"]})
+
+    def test_card_and_origin_pagination(self):
+        self.store.issue(self.origin["id"], 25, None, "admin")
+        newest = self.store.list_cards(1, 20)
+        last = self.store.list_cards(2, 20)
+        self.assertEqual((newest["total"], newest["pages"], len(last["items"])), (25, 2, 5))
+        self.assertEqual(newest["items"][0]["number"], "VIBZ-000025")
+        self.assertEqual(last["items"][-1]["number"], "VIBZ-000001")
+        self.assertEqual(self.store.list_origins(1, 20)["total"], 1)
 
 
 if __name__ == "__main__":

@@ -9,10 +9,11 @@ import secrets
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from typing import Literal
 
 import qrcode
 import qrcode.image.svg
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -66,6 +67,24 @@ class LookupInput(BaseModel):
 
 class RedeemInput(BaseModel):
     wristband: str = Field(min_length=1, max_length=32)
+
+
+Category = Literal["hospedagem", "gastronomia", "praia"]
+PartnerStatus = Literal["nao_contatado", "contatado", "interessado", "parceiro"]
+Priority = Literal["baixa", "media", "alta"]
+
+
+class PartnerUpdate(BaseModel):
+    neighborhood: str | None = Field(default=None, max_length=120)
+    address: str | None = Field(default=None, max_length=240)
+    phone: str | None = Field(default=None, max_length=40)
+    whatsapp: str | None = Field(default=None, max_length=40)
+    instagram: str | None = Field(default=None, max_length=120)
+    website: str | None = Field(default=None, max_length=240)
+    manager: str | None = Field(default=None, max_length=120)
+    estimated_rooms: int | None = Field(default=None, ge=0, le=10000)
+    priority: Priority | None = None
+    status: PartnerStatus | None = None
 
 
 def create_app(settings: Settings | None = None, store: Store | None = None) -> FastAPI:
@@ -166,16 +185,40 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
         response.delete_cookie(COOKIE_NAME, path=settings.cookie_path)
 
     @app.get("/api/origins")
-    def origins(_staff: Actor = Depends(actor)):
-        return store.list_origins()
+    def origins(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+                _staff: Actor = Depends(actor)):
+        return store.list_origins(page, page_size)
+
+    @app.get("/api/origins/options")
+    def origin_options(_staff: Actor = Depends(actor)):
+        return store.origin_options()
 
     @app.post("/api/origins", status_code=201)
     def create_origin(data: OriginInput, staff: Actor = Depends(admin)):
         return store_call(store.create_origin, data.name, data.category, str(staff.id))
 
     @app.get("/api/cards")
-    def cards(limit: int = 50, origin_id: str | None = None, _staff: Actor = Depends(actor)):
-        return [card_response(card) for card in store.list_cards(limit, origin_id)]
+    def cards(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+              origin_id: str | None = None, _staff: Actor = Depends(actor)):
+        result = store.list_cards(page, page_size, origin_id)
+        result["items"] = [card_response(card) for card in result["items"]]
+        return result
+
+    @app.get("/api/partners")
+    def partners(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+                 category: Category | None = None, status: PartnerStatus | None = None,
+                 q: str = Query("", max_length=120), _staff: Actor = Depends(actor)):
+        return store.list_partners(page, page_size, category, status, q)
+
+    @app.patch("/api/partners/{identifier}")
+    def update_partner(identifier: str, data: PartnerUpdate, _staff: Actor = Depends(admin)):
+        changes = data.model_dump(exclude_unset=True)
+        for key, value in changes.items():
+            if value is None and key != "estimated_rooms":
+                raise HTTPException(422, f"{key} não pode ser vazio")
+            if isinstance(value, str):
+                changes[key] = value.strip()
+        return store_call(store.update_partner, identifier, changes)
 
     @app.post("/api/cards", status_code=201)
     def issue_cards(data: IssueInput, staff: Actor = Depends(admin)):

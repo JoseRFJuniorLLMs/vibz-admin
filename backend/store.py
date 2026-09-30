@@ -106,6 +106,25 @@ class Store:
                     attempts INTEGER NOT NULL,
                     started_at INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS partners (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    category TEXT NOT NULL CHECK(category IN ('hospedagem','gastronomia','praia')),
+                    neighborhood TEXT NOT NULL DEFAULT '',
+                    address TEXT NOT NULL DEFAULT '',
+                    phone TEXT NOT NULL DEFAULT '',
+                    whatsapp TEXT NOT NULL DEFAULT '',
+                    instagram TEXT NOT NULL DEFAULT '',
+                    website TEXT NOT NULL DEFAULT '',
+                    manager TEXT NOT NULL DEFAULT '',
+                    estimated_rooms INTEGER CHECK(estimated_rooms IS NULL OR estimated_rooms >= 0),
+                    priority TEXT NOT NULL DEFAULT 'media' CHECK(priority IN ('baixa','media','alta')),
+                    status TEXT NOT NULL DEFAULT 'nao_contatado' CHECK(status IN ('nao_contatado','contatado','interessado','parceiro')),
+                    source_note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS partners_filter_idx ON partners(category,status,name);
             """)
 
     def _connect(self) -> sqlite3.Connection:
@@ -140,9 +159,25 @@ class Store:
             )
         return origin
 
-    def list_origins(self) -> list[dict]:
+    def list_origins(self, page: int = 1, page_size: int = 20) -> dict:
         with closing(self._connect()) as db:
-            return [dict(row) for row in db.execute("SELECT * FROM origins ORDER BY name COLLATE NOCASE")]
+            total = db.execute("SELECT COUNT(*) FROM origins").fetchone()[0]
+            items = [dict(row) for row in db.execute(
+                "SELECT * FROM origins ORDER BY name COLLATE NOCASE, id LIMIT ? OFFSET ?",
+                (page_size, (page - 1) * page_size),
+            )]
+        return self._page(items, total, page, page_size)
+
+    def origin_options(self) -> list[dict]:
+        with closing(self._connect()) as db:
+            return [dict(row) for row in db.execute(
+                "SELECT id,name,category FROM origins WHERE active=1 ORDER BY name COLLATE NOCASE, id"
+            )]
+
+    @staticmethod
+    def _page(items: list[dict], total: int, page: int, page_size: int) -> dict:
+        return {"items": items, "total": total, "page": page,
+                "page_size": page_size, "pages": (total + page_size - 1) // page_size}
 
     def issue(self, origin_id: str, count: int, valid_until: str | None, uid: str) -> list[dict]:
         if not 1 <= count <= 100:
@@ -186,14 +221,68 @@ class Store:
             raise StoreError("Cartão não encontrado", 404)
         return self._card(row)
 
-    def list_cards(self, limit: int = 50, origin_id: str | None = None) -> list[dict]:
-        limit = max(1, min(limit, 100))
+    def list_cards(self, page: int = 1, page_size: int = 20, origin_id: str | None = None) -> dict:
         with closing(self._connect()) as db:
             if origin_id:
-                rows = db.execute("SELECT * FROM cards WHERE origin_id=? ORDER BY id DESC LIMIT ?", (origin_id, limit))
+                total = db.execute("SELECT COUNT(*) FROM cards WHERE origin_id=?", (origin_id,)).fetchone()[0]
+                rows = db.execute("SELECT * FROM cards WHERE origin_id=? ORDER BY id DESC LIMIT ? OFFSET ?", (origin_id, page_size, (page - 1) * page_size))
             else:
-                rows = db.execute("SELECT * FROM cards ORDER BY id DESC LIMIT ?", (limit,))
-            return [self._card(row) for row in rows]
+                total = db.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
+                rows = db.execute("SELECT * FROM cards ORDER BY id DESC LIMIT ? OFFSET ?", (page_size, (page - 1) * page_size))
+            items = [self._card(row) for row in rows]
+        return self._page(items, total, page, page_size)
+
+    def seed_partners(self, entries: list[tuple[str, str]]) -> int:
+        inserted = 0
+        now = utc_now()
+        with closing(self._connect()) as db:
+            for category, name in entries:
+                identifier = uuid.uuid5(uuid.NAMESPACE_URL, f"vibz-buzios-2026:{name.casefold()}").hex
+                result = db.execute(
+                    """INSERT OR IGNORE INTO partners(id,name,category,source_note,created_at,updated_at)
+                       VALUES (?,?,?,?,?,?)""",
+                    (identifier, name, category, "Base de prospecção fornecida pelo proprietário em 2026; parceria e contatos não verificados.", now, now),
+                )
+                inserted += result.rowcount
+        return inserted
+
+    def list_partners(self, page: int = 1, page_size: int = 20, category: str | None = None,
+                      status: str | None = None, query: str = "") -> dict:
+        clauses = []
+        args: list[str] = []
+        if category:
+            clauses.append("category=?")
+            args.append(category)
+        if status:
+            clauses.append("status=?")
+            args.append(status)
+        if query.strip():
+            clauses.append("name LIKE ? ESCAPE '\\'")
+            escaped = query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            args.append(f"%{escaped}%")
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with closing(self._connect()) as db:
+            total = db.execute("SELECT COUNT(*) FROM partners" + where, args).fetchone()[0]
+            items = [dict(row) for row in db.execute(
+                "SELECT * FROM partners" + where + " ORDER BY name COLLATE NOCASE, id LIMIT ? OFFSET ?",
+                (*args, page_size, (page - 1) * page_size),
+            )]
+        return self._page(items, total, page, page_size)
+
+    def update_partner(self, identifier: str, changes: dict) -> dict:
+        fields = ("neighborhood", "address", "phone", "whatsapp", "instagram", "website",
+                  "manager", "estimated_rooms", "priority", "status")
+        updates = {key: changes[key] for key in fields if key in changes}
+        if not updates:
+            raise StoreError("Nenhum campo para atualizar")
+        updates["updated_at"] = utc_now()
+        updates["id"] = identifier
+        assignments = ", ".join(f"{key}=:{key}" for key in updates if key != "id")
+        with closing(self._connect()) as db:
+            cursor = db.execute(f"UPDATE partners SET {assignments} WHERE id=:id", updates)
+            if not cursor.rowcount:
+                raise StoreError("Estabelecimento não encontrado", 404)
+            return dict(db.execute("SELECT * FROM partners WHERE id=?", (identifier,)).fetchone())
 
     def redeem(self, token: str, wristband: str, uid: str) -> dict:
         if not TOKEN_RE.fullmatch(token):

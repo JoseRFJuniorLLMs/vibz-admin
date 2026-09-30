@@ -36,6 +36,7 @@
         <button class="tab" data-tab="issue">Gerar cartões</button>
         <button class="tab" data-tab="cards">Cartões recentes</button>
         <button class="tab admin-only" data-tab="origins">Origens</button>
+        <button class="tab" data-tab="partners">Estabelecimentos</button>
       </nav>
       <p id="notice" class="message" role="status" aria-live="polite"></p>
 
@@ -67,6 +68,7 @@
       <section id="cardsTab" class="tab-panel" hidden>
         <div class="panel-head"><div><h2>Cartões recentes</h2><p>Consulte os últimos números e identifique a origem de cada um.</p></div><button id="refreshCards" type="button">Atualizar</button></div>
         <div class="panel table-wrap"><table><thead><tr><th>Cartão</th><th>Origem</th><th>Status</th><th>Emitido</th><th>Ação</th></tr></thead><tbody id="cardsBody"></tbody></table></div>
+        <div class="pager"><button id="cardsPrev" type="button">Anterior</button><span id="cardsPage"></span><button id="cardsNext" type="button">Próxima</button></div>
       </section>
 
       <section id="originsTab" class="tab-panel" hidden>
@@ -77,6 +79,36 @@
           <button type="submit" class="primary">Cadastrar origem</button>
         </form>
         <div id="originList" class="origin-list"></div>
+        <div class="pager"><button id="originsPrev" type="button">Anterior</button><span id="originsPage"></span><button id="originsNext" type="button">Próxima</button></div>
+      </section>
+
+      <section id="partnersTab" class="tab-panel" hidden>
+        <div class="panel-head"><div><h2>Estabelecimentos de Búzios</h2><p>Base comercial para prospecção. Estes nomes ainda não indicam parceria confirmada.</p></div></div>
+        <form id="partnerFilter" class="panel filters">
+          <label>Buscar nome<input id="partnerQuery" maxlength="120" placeholder="Nome do estabelecimento"></label>
+          <label>Categoria<select id="partnerCategory"><option value="">Todas</option><option value="hospedagem">Hospedagem</option><option value="gastronomia">Gastronomia</option><option value="praia">Praia</option></select></label>
+          <label>Status<select id="partnerStatus"><option value="">Todos</option><option value="nao_contatado">Não contatado</option><option value="contatado">Contatado</option><option value="interessado">Interessado</option><option value="parceiro">Parceiro confirmado</option></select></label>
+          <button type="submit">Buscar</button>
+        </form>
+        <div class="panel table-wrap"><table><thead><tr><th>Estabelecimento</th><th>Categoria</th><th>Status</th><th>Prioridade</th><th>Ação</th></tr></thead><tbody id="partnersBody"></tbody></table></div>
+        <div class="pager"><button id="partnersPrev" type="button">Anterior</button><span id="partnersPage"></span><button id="partnersNext" type="button">Próxima</button></div>
+        <form id="partnerEdit" class="panel partner-edit" hidden>
+          <h3 id="partnerEditTitle"></h3>
+          <p>Atualize os dados após confirmar com o estabelecimento. Marque “Parceiro confirmado” somente após acordo.</p>
+          <div class="partner-fields">
+            <label>Bairro ou praia<input name="neighborhood" maxlength="120"></label>
+            <label>Endereço<input name="address" maxlength="240"></label>
+            <label>Telefone<input name="phone" maxlength="40"></label>
+            <label>WhatsApp<input name="whatsapp" maxlength="40"></label>
+            <label>Instagram<input name="instagram" maxlength="120"></label>
+            <label>Site<input name="website" maxlength="240"></label>
+            <label>Responsável ou gerente<input name="manager" maxlength="120"></label>
+            <label>Quartos estimados<input name="estimated_rooms" type="number" min="0" max="10000"></label>
+            <label>Prioridade<select name="priority"><option value="baixa">Baixa</option><option value="media">Média</option><option value="alta">Alta</option></select></label>
+            <label>Status<select name="status"><option value="nao_contatado">Não contatado</option><option value="contatado">Contatado</option><option value="interessado">Interessado</option><option value="parceiro">Parceiro confirmado</option></select></label>
+          </div>
+          <div class="button-row"><button type="submit" class="primary">Salvar estabelecimento</button><button id="cancelPartnerEdit" type="button">Cancelar</button></div>
+        </form>
       </section>
     </section>
   </main>
