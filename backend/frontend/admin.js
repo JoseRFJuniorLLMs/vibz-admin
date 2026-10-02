@@ -48,6 +48,26 @@ function normalizeStr(str) {
   return (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 }
 
+function applyTheme(theme) {
+  const isLight = theme === 'light';
+  if (isLight) {
+    document.documentElement.setAttribute('data-theme', 'light');
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+  try { localStorage.setItem('vibz-theme', isLight ? 'light' : 'dark'); } catch (_) {}
+  $('themeLightBtn')?.classList.toggle('active', isLight);
+  $('themeDarkBtn')?.classList.toggle('active', !isLight);
+}
+
+try {
+  const savedTheme = localStorage.getItem('vibz-theme') || 'dark';
+  applyTheme(savedTheme);
+} catch (_) {}
+
+$('themeLightBtn')?.addEventListener('click', () => applyTheme('light'));
+$('themeDarkBtn')?.addEventListener('click', () => applyTheme('dark'));
+
 function formatDateTime(value) {
   if (!value) return '—';
   const parsed = new Date(value);

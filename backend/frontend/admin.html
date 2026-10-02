@@ -5,14 +5,24 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#0b0b12">
   <meta name="robots" content="noindex,nofollow">
-  <link rel="stylesheet" href="../static/admin.css?v=20261002-v17-cards-consumo">
+  <link rel="stylesheet" href="../static/admin.css?v=20261002-v18-theme-switcher">
+  <script>
+    try { if (localStorage.getItem('vibz-theme') === 'light') document.documentElement.setAttribute('data-theme', 'light'); } catch(e) {}
+  </script>
   <script src="../static/vendor/jsQR.js" defer></script>
-  <script type="module" src="../static/admin.js?v=20261002-v17-cards-consumo"></script>
+  <script type="module" src="../static/admin.js?v=20261002-v18-theme-switcher"></script>
 </head>
 <body>
   <header class="topbar">
     <div class="brand"><span class="brand-mark">V</span><span><strong>vibz-admin</strong><small>TOURIST PASS</small></span></div>
-    <div id="account" class="account" hidden><span id="accountName"></span><button id="logoutButton" class="text-button">Sair</button></div>
+    <div id="account" class="account" hidden>
+      <span id="accountName"></span>
+      <div class="theme-switcher" role="group" aria-label="Tema visual">
+        <button id="themeLightBtn" type="button" class="theme-btn" title="Mudar para cor clara">☀️ Claro</button>
+        <button id="themeDarkBtn" type="button" class="theme-btn active" title="Mudar para cor escura">🌙 Escuro</button>
+      </div>
+      <button id="logoutButton" class="text-button">Sair</button>
+    </div>
   </header>
 
   <main class="shell">
