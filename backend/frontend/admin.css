@@ -109,3 +109,120 @@ a{color:#ff9d77}
   cursor: pointer;
 }
 
+/* Bar and Drink Catalog Styling */
+.bar-sub-btn {
+  background: #1e1b27;
+  color: #bcb8c4;
+  border: 1px solid #3c3447;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.bar-sub-btn:hover {
+  background: #2a2436;
+  color: #ffffff;
+  border-color: #ee6f64;
+}
+.bar-sub-btn.active {
+  background: linear-gradient(135deg, #ee6f64, #f59e0b) !important;
+  color: #ffffff !important;
+  border-color: transparent !important;
+  font-weight: 700;
+  box-shadow: 0 4px 14px rgba(238, 111, 100, 0.4);
+}
+
+.drink-card {
+  background: #171522;
+  border: 1px solid #322b3d;
+  border-radius: 12px;
+  padding: 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 8px;
+  transition: transform 0.1s ease, border-color 0.15s ease, background 0.15s ease;
+  user-select: none;
+}
+.drink-card:hover {
+  transform: translateY(-2px);
+  border-color: #ee6f64;
+  background: #211c2e;
+}
+.drink-card:active {
+  transform: scale(0.97);
+}
+.drink-card-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: #ffffff;
+  line-height: 1.25;
+}
+.drink-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+.drink-card-price {
+  font-size: 15px;
+  font-weight: 800;
+  color: #8be5b7;
+}
+
+.dosage-badge {
+  display: inline-block;
+  padding: 3px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.dosage-dose {
+  background: rgba(238, 111, 100, 0.15);
+  color: #ff9e73;
+  border: 1px solid rgba(238, 111, 100, 0.3);
+}
+.dosage-garrafa {
+  background: rgba(139, 229, 183, 0.15);
+  color: #8be5b7;
+  border: 1px solid rgba(139, 229, 183, 0.3);
+}
+.dosage-lata, .dosage-unidade {
+  background: rgba(147, 197, 253, 0.15);
+  color: #93c5fd;
+  border: 1px solid rgba(147, 197, 253, 0.3);
+}
+
+.cart-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: #181523;
+  border: 1px solid #362f43;
+  border-radius: 8px;
+  gap: 10px;
+}
+.cart-qty-btn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 800;
+  border-radius: 6px;
+  border: 1px solid #49424f;
+  background: #231f2f;
+  color: #fff;
+  cursor: pointer;
+}
+.cart-qty-btn:hover {
+  border-color: #ee6f64;
+  background: #332b40;
+}
+

@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#0b0b12">
   <meta name="robots" content="noindex,nofollow">
-  <link rel="stylesheet" href="../static/admin.css?v=20261002-v7-del-cards">
+  <link rel="stylesheet" href="../static/admin.css?v=20261002-v8-bar-module">
   <script src="../static/vendor/jsQR.js" defer></script>
-  <script type="module" src="../static/admin.js?v=20261002-v7-del-cards"></script>
+  <script type="module" src="../static/admin.js?v=20261002-v8-bar-module"></script>
 </head>
 <body>
   <header class="topbar">
@@ -35,6 +35,7 @@
         <button class="tab" data-tab="issue">Gerar cartões</button>
         <button class="tab" data-tab="cards">Cartões emitidos</button>
         <button class="tab" data-tab="scanned">Cartões lidos</button>
+        <button class="tab" data-tab="bar">🍸 Bar</button>
         <button class="tab" data-tab="reports">Relatórios</button>
         <button class="tab admin-only" data-tab="origins">Origens</button>
         <button class="tab" data-tab="partners">Estabelecimentos</button>
@@ -162,6 +163,226 @@
           <button id="scannedPrev" type="button">Anterior</button>
           <span id="scannedPage"></span>
           <button id="scannedNext" type="button">Próxima</button>
+        </div>
+      </section>
+
+      <section id="barTab" class="tab-panel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>🍸 Bar & Cardápio VIBZ</h2>
+            <p>Ponto de venda integrado aos cartões, cardápio de bebidas editável e relatórios de faturamento.</p>
+          </div>
+          <div class="button-row" style="margin:0;gap:8px">
+            <button id="barSubNavPdv" type="button" class="primary bar-sub-btn">🛒 Novo Consumo (PDV)</button>
+            <button id="barSubNavMenu" type="button" class="bar-sub-btn">📋 Cardápio de Bebidas</button>
+            <button id="barSubNavClients" type="button" class="bar-sub-btn">👤 Consumo por Cliente</button>
+            <button id="barSubNavDaily" type="button" class="bar-sub-btn">📊 Vendas do Dia</button>
+          </div>
+        </div>
+
+        <!-- 1. SUB-ABA: PDV BAR (Lançar Consumo) -->
+        <div id="barPdvView" class="bar-view">
+          <div class="two-col" style="align-items:start">
+            <!-- Coluna da Esquerda: Identificação do Cartão e Carrinho / Comanda -->
+            <div style="display:flex;flex-direction:column;gap:16px">
+              <div class="panel">
+                <h3 style="margin:0 0 10px;font-size:18px">1. Identificar Cartão do Cliente</h3>
+                <div style="display:flex;gap:8px">
+                  <input id="barCardInput" placeholder="Número (ex.: VIBZ-000001 ou 1) ou escaneie o QR" autocomplete="off" style="flex:1">
+                  <button id="barFindCardBtn" type="button" class="primary">Buscar</button>
+                </div>
+                <div id="barCardStatusBox" style="margin-top:12px;padding:12px;background:#1b1926;border-radius:10px;border:1px solid #3d354a;display:none">
+                  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+                    <div>
+                      <strong id="barCardNumber" style="font-size:17px;color:#ff9e73"></strong>
+                      <span id="barCardOrigin" style="font-size:13px;color:#bcb8c4;display:block"></span>
+                    </div>
+                    <span id="barCardTotalSpent" class="badge valid" style="font-size:12px;padding:5px 10px">Total já consumido: R$ 0,00</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Comanda / Carrinho de Bebidas -->
+              <div class="panel">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                  <h3 style="margin:0;font-size:18px">2. Comanda Atual</h3>
+                  <button id="barClearCartBtn" type="button" class="text-button" style="padding:0;font-size:12px;color:#ff8790">Limpar comanda</button>
+                </div>
+                <div id="barCartEmpty" style="color:#8d8795;text-align:center;padding:24px 0">
+                  Nenhuma bebida selecionada. Clique nas opções do cardápio ao lado para adicionar.
+                </div>
+                <div id="barCartItems" style="display:flex;flex-direction:column;gap:8px"></div>
+                
+                <div id="barCartTotalBox" style="margin-top:16px;padding-top:14px;border-top:1px solid #ffffff24;display:none">
+                  <div style="display:flex;justify-content:space-between;align-items:center">
+                    <span style="font-size:15px;color:#bcb8c4">Total a pagar:</span>
+                    <strong id="barCartTotal" style="font-size:26px;color:#8be5b7">R$ 0,00</strong>
+                  </div>
+                  <button id="barSubmitOrderBtn" type="button" class="primary" style="width:100%;margin-top:14px;padding:12px;font-size:15px;font-weight:800">
+                    ✓ Confirmar Consumo / Pagamento
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Coluna da Direita: Catálogo de Bebidas (Cards rápidos para clicar) -->
+            <div class="panel">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <h3 style="margin:0;font-size:18px">Cardápio Rápido</h3>
+                <span id="barDrinksCountBadge" style="font-size:12px;color:#bcb8c4"></span>
+              </div>
+              <div id="barQuickMenuGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. SUB-ABA: CARDÁPIO DE BEBIDAS (Gerenciar & Editar) -->
+        <div id="barMenuView" class="bar-view" hidden>
+          <div class="panel admin-only">
+            <h3 id="drinkFormTitle" style="margin:0 0 14px">Cadastrar Nova Bebida</h3>
+            <form id="drinkForm" class="form-grid" style="grid-template-columns:minmax(200px,2fr) minmax(130px,1fr) minmax(140px,1fr) auto">
+              <input type="hidden" id="drinkEditId">
+              <label>Nome da bebida<input id="drinkName" required placeholder="Ex.: Gin Tropical" maxlength="120"></label>
+              <label>Preço (R$)<input id="drinkPrice" type="number" step="0.50" min="0.50" required placeholder="35.00"></label>
+              <label>Dosagem<select id="drinkDosage" required><option value="dose">Dose</option><option value="garrafa">Garrafa</option><option value="lata">Lata</option><option value="unidade">Unidade</option></select></label>
+              <div style="display:flex;gap:6px">
+                <button type="submit" class="primary" id="saveDrinkBtn">Salvar bebida</button>
+                <button type="button" id="cancelEditDrinkBtn" style="display:none">Cancelar</button>
+              </div>
+            </form>
+          </div>
+
+          <div style="margin-top:20px">
+            <div class="panel-head"><div><h3>Bebidas cadastradas no bar</h3><p>Edite nome, valor ou dosagem a qualquer momento.</p></div></div>
+            <div class="panel table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Bebida</th>
+                    <th>Dosagem</th>
+                    <th>Valor</th>
+                    <th>Status</th>
+                    <th>Ações</th>
+                  </tr>
+                </thead>
+                <tbody id="drinksBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. SUB-ABA: RELATÓRIO DE CONSUMO POR CLIENTE -->
+        <div id="barClientsView" class="bar-view" hidden>
+          <div class="panel filters">
+            <label style="flex:1">Buscar por número do cartão ou origem<input id="clientConsumptionQuery" placeholder="Ex.: VIBZ-000001 ou Pousada"></label>
+            <button id="clientConsumptionSearchBtn" type="button">Buscar</button>
+            <button id="clientConsumptionRefreshBtn" type="button">Atualizar</button>
+          </div>
+
+          <div class="panel table-wrap" style="margin-top:16px">
+            <table>
+              <thead>
+                <tr>
+                  <th>Cartão</th>
+                  <th>Origem</th>
+                  <th>Pedidos</th>
+                  <th>Total Consumido</th>
+                  <th>Bebidas Consumidas</th>
+                  <th>Última Compra</th>
+                  <th>Ação</th>
+                </tr>
+              </thead>
+              <tbody id="clientConsumptionBody"></tbody>
+            </table>
+          </div>
+          <div class="pager">
+            <button id="consumptionPrev" type="button">Anterior</button>
+            <span id="consumptionPage"></span>
+            <button id="consumptionNext" type="button">Próxima</button>
+          </div>
+
+          <!-- Modal / Painel de Detalhes do Cliente -->
+          <div id="clientDetailsModal" class="panel" style="margin-top:20px;border:1px solid #ff7b4b88;display:none">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+              <div>
+                <h3 id="cdmCardNumber" style="margin:0;font-size:20px;color:#fff"></h3>
+                <span id="cdmOrigin" style="font-size:13px;color:#d0bdca"></span>
+              </div>
+              <button id="closeCdmBtn" type="button">✕ Fechar extrato</button>
+            </div>
+            <div class="kpi-grid" style="margin-bottom:16px">
+              <div class="kpi-card"><div class="kpi-info"><div class="kpi-label">TOTAL GASTO NO BAR</div><div id="cdmTotalSpent" class="kpi-value">R$ 0,00</div></div></div>
+              <div class="kpi-card"><div class="kpi-info"><div class="kpi-label">TOTAL DE PEDIDOS</div><div id="cdmTotalOrders" class="kpi-value">0</div></div></div>
+            </div>
+            <h4>Histórico detalhado de pedidos</h4>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Data / Hora</th>
+                    <th>Atendente</th>
+                    <th>Itens</th>
+                    <th>Total</th>
+                  </tr>
+                </thead>
+                <tbody id="cdmOrdersBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. SUB-ABA: RELATÓRIO DE VENDAS DO DIA -->
+        <div id="barDailyView" class="bar-view" hidden>
+          <div class="panel" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+            <div style="display:flex;align-items:center;gap:12px">
+              <label style="font-weight:700">Selecione o Dia:<input id="barDailyDate" type="date" style="max-width:200px"></label>
+              <button id="barDailyRefreshBtn" type="button" class="primary" style="margin-top:22px">Carregar vendas</button>
+            </div>
+            <span id="barDailyCurrentDateLabel" style="color:#ff9e73;font-weight:700"></span>
+          </div>
+
+          <div class="kpi-grid" style="margin-top:16px">
+            <div class="kpi-card"><div class="kpi-info"><div class="kpi-label">FATURAMENTO TOTAL DO DIA</div><div id="kpiBarRevenue" class="kpi-value">R$ 0,00</div></div></div>
+            <div class="kpi-card"><div class="kpi-info"><div class="kpi-label">BEBIDAS SERVIDAS HOJE</div><div id="kpiBarDrinks" class="kpi-value">0</div></div></div>
+            <div class="kpi-card"><div class="kpi-info"><div class="kpi-label">PEDIDOS REALIZADOS</div><div id="kpiBarOrders" class="kpi-value">0</div></div></div>
+            <div class="kpi-card"><div class="kpi-info"><div class="kpi-label">CLIENTES CONSUMINDO</div><div id="kpiBarCustomers" class="kpi-value">0</div></div></div>
+          </div>
+
+          <div style="margin-top:24px">
+            <div class="panel-head"><div><h3>Vendas por Bebida no Dia</h3><p>Volume e receita gerada por cada item do cardápio.</p></div></div>
+            <div class="panel table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Bebida</th>
+                    <th>Dosagem</th>
+                    <th>Preço Médio</th>
+                    <th>Quantidade Vendida</th>
+                    <th>Total Faturado</th>
+                  </tr>
+                </thead>
+                <tbody id="barDailyDrinksBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div style="margin-top:24px">
+            <div class="panel-head"><div><h3>Extrato de Vendas do Dia</h3><p>Histórico cronológico de cada atendimento realizado no bar.</p></div></div>
+            <div class="panel table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Hora</th>
+                    <th>Cartão</th>
+                    <th>Itens</th>
+                    <th>Total</th>
+                    <th>Atendente</th>
+                  </tr>
+                </thead>
+                <tbody id="barDailyOrdersBody"></tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </section>
 

@@ -103,6 +103,29 @@ class PartnerUpdate(BaseModel):
     status: PartnerStatus | None = None
 
 
+class DrinkInput(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    price: float = Field(gt=0)
+    dosage: str = Field(pattern=r"^(dose|garrafa|lata|unidade)$")
+
+
+class DrinkUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=120)
+    price: float | None = Field(default=None, gt=0)
+    dosage: str | None = Field(default=None, pattern=r"^(dose|garrafa|lata|unidade)$")
+    active: bool | None = None
+
+
+class BarOrderItemInput(BaseModel):
+    drink_id: int
+    quantity: int = Field(default=1, ge=1, le=100)
+
+
+class BarOrderInput(BaseModel):
+    card: str = Field(min_length=1, max_length=512)
+    items: list[BarOrderItemInput] = Field(min_length=1, max_length=50)
+
+
 def create_app(settings: Settings | None = None, store: Store | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     store = store or Store(settings.db_path)
@@ -484,7 +507,55 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
             origin_id=(origin_id or None) if origin_id != "all" else None
         )
 
+    # -------------------------------------------------------------
+    # ENDPOINTS BAR & CARDÁPIO DE BEBIDAS
+    # -------------------------------------------------------------
+    @app.get("/api/bar/drinks")
+    def list_drinks(active_only: bool = False, _staff: Actor = Depends(actor)):
+        return store.list_drinks(active_only=active_only)
 
+    @app.post("/api/bar/drinks", status_code=201)
+    def create_drink(data: DrinkInput, _staff: Actor = Depends(admin)):
+        return store_call(store.create_drink, data.name, data.price, data.dosage)
+
+    @app.patch("/api/bar/drinks/{drink_id}")
+    def update_drink(drink_id: int, data: DrinkUpdate, _staff: Actor = Depends(admin)):
+        changes = data.model_dump(exclude_unset=True)
+        return store_call(store.update_drink, drink_id, changes)
+
+    @app.delete("/api/bar/drinks/{drink_id}")
+    def delete_drink(drink_id: int, _staff: Actor = Depends(admin)):
+        store_call(store.delete_drink, drink_id)
+        return {"ok": True, "drink_id": drink_id}
+
+    @app.get("/api/bar/card/{identifier}")
+    def get_bar_card_consumption(identifier: str, _staff: Actor = Depends(actor)):
+        return store_call(store.get_card_consumption, identifier, settings.public_base_url)
+
+    @app.post("/api/bar/order", status_code=201)
+    def create_bar_order(data: BarOrderInput, staff: Actor = Depends(csrf_actor)):
+        items_dict = [it.model_dump() for it in data.items]
+        return store_call(
+            store.create_bar_order,
+            data.card,
+            items_dict,
+            str(staff.id),
+            staff.username,
+            settings.public_base_url,
+        )
+
+    @app.get("/api/bar/reports/consumption")
+    def bar_consumption_report(
+        page: int = Query(1, ge=1),
+        page_size: int = Query(20, ge=1, le=100),
+        q: str = Query("", max_length=120),
+        _staff: Actor = Depends(actor),
+    ):
+        return store.list_all_consumption(page=page, page_size=page_size, q=q)
+
+    @app.get("/api/bar/reports/daily")
+    def bar_daily_report(date: str | None = None, _staff: Actor = Depends(actor)):
+        return store.daily_bar_report(date_str=date)
 
     @app.get("/p/{token}")
     def public_pass(token: str):

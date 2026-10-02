@@ -140,6 +140,7 @@ function switchTab(name) {
       }
     }, 15000);
   }
+  if (name === 'bar') initBarModule().catch((error) => notice(error.message, 'error'));
   if (name === 'reports') refreshReports().catch((error) => notice(error.message, 'error'));
   if (name === 'origins') refreshOrigins().catch((error) => notice(error.message, 'error'));
   if (name === 'partners') refreshPartners().catch((error) => notice(error.message, 'error'));
@@ -1476,5 +1477,584 @@ $('startCamera').addEventListener('click', () => startCamera().catch((error) => 
 $('stopCamera').addEventListener('click', stopCamera);
 window.addEventListener('pagehide', stopCamera);
 
+// =============================================================
+// MÓDULO BAR & CARDÁPIO DE BEBIDAS
+// =============================================================
+let currentDrinks = [];
+let currentBarCart = [];
+let currentBarCard = null;
+let barSubTab = 'pdv';
+let consumptionPage = 1;
+let consumptionQuery = '';
+
+function formatMoney(value) {
+  const num = Number(value) || 0;
+  return `R$ ${num.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+}
+
+async function initBarModule() {
+  const dateInput = $('barDailyDate');
+  if (dateInput && !dateInput.value) {
+    dateInput.value = new Date().toISOString().slice(0, 10);
+  }
+  switchBarSubTab(barSubTab || 'pdv');
+  await refreshBarMenu();
+}
+
+function switchBarSubTab(name) {
+  barSubTab = name;
+  const tabs = {
+    pdv: $('barPdvView'),
+    menu: $('barMenuView'),
+    clients: $('barClientsView'),
+    daily: $('barDailyView')
+  };
+  const btns = {
+    pdv: $('barSubNavPdv'),
+    menu: $('barSubNavMenu'),
+    clients: $('barSubNavClients'),
+    daily: $('barSubNavDaily')
+  };
+  for (const [k, el] of Object.entries(tabs)) {
+    if (el) el.hidden = (k !== name);
+  }
+  for (const [k, btn] of Object.entries(btns)) {
+    if (btn) btn.classList.toggle('active', k === name);
+  }
+
+  if (name === 'pdv') {
+    renderCart();
+    renderQuickMenu();
+  } else if (name === 'menu') {
+    refreshBarMenu().catch((err) => notice(err.message, 'error'));
+  } else if (name === 'clients') {
+    consumptionPage = 1;
+    refreshClientConsumption().catch((err) => notice(err.message, 'error'));
+  } else if (name === 'daily') {
+    refreshDailyBarReport().catch((err) => notice(err.message, 'error'));
+  }
+}
+
+async function refreshBarMenu() {
+  try {
+    currentDrinks = await api('bar/drinks?active_only=false');
+  } catch (err) {
+    notice(`Erro ao carregar cardápio: ${err.message}`, 'error');
+    return;
+  }
+  renderDrinksTable();
+  renderQuickMenu();
+}
+
+function renderQuickMenu() {
+  const grid = $('barQuickMenuGrid');
+  const countBadge = $('barDrinksCountBadge');
+  if (!grid) return;
+  const activeDrinks = currentDrinks.filter((d) => d.active);
+  if (countBadge) countBadge.textContent = `${activeDrinks.length} opções disponíveis`;
+  grid.replaceChildren();
+
+  for (const drink of activeDrinks) {
+    const card = node('div', 'drink-card');
+    card.setAttribute('role', 'button');
+    card.setAttribute('tabindex', '0');
+
+    const nameEl = node('div', 'drink-card-name', drink.name);
+    
+    const footer = node('div', 'drink-card-footer');
+    const badge = node('span', `dosage-badge dosage-${drink.dosage}`, drink.dosage);
+    const price = node('span', 'drink-card-price', formatMoney(drink.price));
+    footer.append(badge, price);
+
+    card.append(nameEl, footer);
+    card.addEventListener('click', () => {
+      addToCart(drink);
+    });
+    grid.append(card);
+  }
+
+  if (!activeDrinks.length) {
+    grid.append(node('p', 'hint', 'Nenhuma bebida ativa no momento. Cadastre opções na aba "Cardápio de Bebidas".'));
+  }
+}
+
+function renderDrinksTable() {
+  const body = $('drinksBody');
+  if (!body) return;
+  body.replaceChildren();
+
+  for (const drink of currentDrinks) {
+    const row = node('tr');
+
+    const nameCell = node('td', '', drink.name);
+    const dosageCell = node('td');
+    dosageCell.append(node('span', `dosage-badge dosage-${drink.dosage}`, drink.dosage));
+    const priceCell = node('td', '', formatMoney(drink.price));
+
+    const statusBadge = node('span', `badge ${drink.active ? 'valid' : 'used'}`, drink.active ? 'Ativo' : 'Inativo');
+    const statusCell = node('td');
+    statusCell.append(statusBadge);
+
+    const actionWrap = node('div', 'button-row');
+    actionWrap.style.margin = '0';
+    actionWrap.style.gap = '6px';
+
+    const editBtn = node('button', '', 'Editar');
+    editBtn.type = 'button';
+    editBtn.style.padding = '5px 9px';
+    editBtn.style.fontSize = '12px';
+    editBtn.addEventListener('click', () => editDrink(drink));
+
+    const toggleBtn = node('button', '', drink.active ? 'Desativar' : 'Ativar');
+    toggleBtn.type = 'button';
+    toggleBtn.style.padding = '5px 9px';
+    toggleBtn.style.fontSize = '12px';
+    toggleBtn.addEventListener('click', async () => {
+      try {
+        await api(`bar/drinks/${drink.id}`, { method: 'PATCH', body: { active: !drink.active } });
+        notice(`Bebida "${drink.name}" ${drink.active ? 'desativada' : 'ativada'}.`, 'success');
+        await refreshBarMenu();
+      } catch (err) {
+        notice(err.message, 'error');
+      }
+    });
+
+    const delBtn = node('button', 'danger-btn', '🗑️ Excluir');
+    delBtn.type = 'button';
+    delBtn.style.padding = '5px 9px';
+    delBtn.style.fontSize = '12px';
+    delBtn.addEventListener('click', async () => {
+      if (!window.confirm(`Deseja realmente excluir ou desativar a bebida "${drink.name}"?`)) return;
+      try {
+        await api(`bar/drinks/${drink.id}`, { method: 'DELETE' });
+        notice(`Bebida "${drink.name}" removida do cardápio.`, 'success');
+        await refreshBarMenu();
+      } catch (err) {
+        notice(err.message, 'error');
+      }
+    });
+
+    actionWrap.append(editBtn, toggleBtn, delBtn);
+    const actionCell = node('td');
+    actionCell.append(actionWrap);
+
+    row.append(nameCell, dosageCell, priceCell, statusCell, actionCell);
+    body.append(row);
+  }
+
+  if (!currentDrinks.length) {
+    const row = node('tr');
+    const cell = node('td', '', 'Nenhuma bebida cadastrada ainda.');
+    cell.colSpan = 5;
+    row.append(cell);
+    body.append(row);
+  }
+}
+
+function editDrink(drink) {
+  $('drinkEditId').value = drink.id;
+  $('drinkName').value = drink.name;
+  $('drinkPrice').value = drink.price;
+  $('drinkDosage').value = drink.dosage;
+  $('drinkFormTitle').textContent = `Editar Bebida: ${drink.name}`;
+  $('saveDrinkBtn').textContent = 'Salvar alterações';
+  $('cancelEditDrinkBtn').style.display = 'inline-block';
+  $('drinkName').focus();
+  window.scrollTo({ top: $('drinkForm').offsetTop - 60, behavior: 'smooth' });
+}
+
+function resetDrinkForm() {
+  $('drinkEditId').value = '';
+  $('drinkForm').reset();
+  $('drinkFormTitle').textContent = 'Cadastrar Nova Bebida';
+  $('saveDrinkBtn').textContent = 'Salvar bebida';
+  $('cancelEditDrinkBtn').style.display = 'none';
+}
+
+function addToCart(drink) {
+  const existing = currentBarCart.find((it) => it.drink_id === drink.id);
+  if (existing) {
+    existing.quantity += 1;
+  } else {
+    currentBarCart.push({
+      drink_id: drink.id,
+      name: drink.name,
+      dosage: drink.dosage,
+      price: drink.price,
+      quantity: 1
+    });
+  }
+  renderCart();
+}
+
+function updateCartItemQty(drinkId, delta) {
+  const idx = currentBarCart.findIndex((it) => it.drink_id === drinkId);
+  if (idx < 0) return;
+  currentBarCart[idx].quantity += delta;
+  if (currentBarCart[idx].quantity <= 0) {
+    currentBarCart.splice(idx, 1);
+  }
+  renderCart();
+}
+
+function renderCart() {
+  const container = $('barCartItems');
+  const emptyMsg = $('barCartEmpty');
+  const totalBox = $('barCartTotalBox');
+  const totalEl = $('barCartTotal');
+  if (!container) return;
+
+  container.replaceChildren();
+
+  if (!currentBarCart.length) {
+    if (emptyMsg) emptyMsg.style.display = 'block';
+    if (totalBox) totalBox.style.display = 'none';
+    return;
+  }
+
+  if (emptyMsg) emptyMsg.style.display = 'none';
+  if (totalBox) totalBox.style.display = 'block';
+
+  let total = 0;
+  for (const item of currentBarCart) {
+    const subtotal = item.price * item.quantity;
+    total += subtotal;
+
+    const row = node('div', 'cart-item-row');
+
+    const info = node('div');
+    info.style.flex = '1';
+    const title = node('strong', '', item.name);
+    title.style.display = 'block';
+    title.style.fontSize = '14px';
+    const sub = node('span', 'hint', `${item.dosage.toUpperCase()} · ${formatMoney(item.price)} un.`);
+    sub.style.margin = '0';
+    info.append(title, sub);
+
+    const controls = node('div');
+    controls.style.display = 'flex';
+    controls.style.alignItems = 'center';
+    controls.style.gap = '6px';
+
+    const minusBtn = node('button', 'cart-qty-btn', '−');
+    minusBtn.type = 'button';
+    minusBtn.addEventListener('click', () => updateCartItemQty(item.drink_id, -1));
+
+    const qtySpan = node('span', '', String(item.quantity));
+    qtySpan.style.minWidth = '22px';
+    qtySpan.style.textAlign = 'center';
+    qtySpan.style.fontWeight = '800';
+
+    const plusBtn = node('button', 'cart-qty-btn', '+');
+    plusBtn.type = 'button';
+    plusBtn.addEventListener('click', () => updateCartItemQty(item.drink_id, 1));
+
+    controls.append(minusBtn, qtySpan, plusBtn);
+
+    const priceBox = node('div');
+    priceBox.style.textAlign = 'right';
+    priceBox.style.minWidth = '80px';
+    const subtotalEl = node('strong', '', formatMoney(subtotal));
+    subtotalEl.style.color = '#8be5b7';
+    subtotalEl.style.fontSize = '14px';
+    priceBox.append(subtotalEl);
+
+    const removeBtn = node('button', 'text-button', '✕');
+    removeBtn.type = 'button';
+    removeBtn.title = 'Remover item';
+    removeBtn.style.color = '#ff8790';
+    removeBtn.style.padding = '0 4px';
+    removeBtn.addEventListener('click', () => {
+      const idx = currentBarCart.findIndex((it) => it.drink_id === item.drink_id);
+      if (idx >= 0) currentBarCart.splice(idx, 1);
+      renderCart();
+    });
+
+    row.append(info, controls, priceBox, removeBtn);
+    container.append(row);
+  }
+
+  if (totalEl) totalEl.textContent = formatMoney(total);
+}
+
+async function findBarCard(val) {
+  const raw = (val || $('barCardInput')?.value || '').trim();
+  if (!raw) {
+    notice('Digite o número do cartão ou escaneie o QR.', 'error');
+    return;
+  }
+  try {
+    const res = await api(`bar/card/${encodeURIComponent(raw)}`);
+    currentBarCard = res.card;
+    $('barCardStatusBox').style.display = 'block';
+    $('barCardNumber').textContent = `${res.card.number}`;
+    $('barCardOrigin').textContent = `Origem: ${res.card.origin_name || 'VIBZ'} · Status: ${res.card.status === 'redeemed' ? 'Entrada confirmada' : 'Emitido'}`;
+    $('barCardTotalSpent').textContent = `Total já consumido no bar: ${formatMoney(res.total_spent)}`;
+    notice(`✓ Cartão ${res.card.number} identificado!`, 'success');
+  } catch (err) {
+    currentBarCard = null;
+    $('barCardStatusBox').style.display = 'none';
+    notice(err.message, 'error');
+  }
+}
+
+async function submitBarOrder() {
+  if (!currentBarCard) {
+    notice('Identifique o cartão do cliente antes de confirmar o consumo.', 'error');
+    $('barCardInput')?.focus();
+    return;
+  }
+  if (!currentBarCart.length) {
+    notice('Selecione ao menos uma bebida no cardápio.', 'error');
+    return;
+  }
+  let total = currentBarCart.reduce((sum, it) => sum + (it.price * it.quantity), 0);
+  if (!window.confirm(`Confirmar venda no valor de ${formatMoney(total)} para o cartão ${currentBarCard.number}?`)) {
+    return;
+  }
+
+  const btn = $('barSubmitOrderBtn');
+  try {
+    btn.disabled = true;
+    const body = {
+      card: currentBarCard.token,
+      items: currentBarCart.map((it) => ({ drink_id: it.drink_id, quantity: it.quantity }))
+    };
+    const order = await api('bar/order', { method: 'POST', body });
+    playBling();
+    notice(`✓ Pedido #${order.id} lançado com sucesso para ${order.card_number}! Total: ${formatMoney(order.total_amount)}`, 'success');
+    currentBarCart = [];
+    renderCart();
+    await findBarCard(currentBarCard.number);
+  } catch (err) {
+    notice(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function refreshClientConsumption() {
+  const query = $('clientConsumptionQuery')?.value.trim() || '';
+  consumptionQuery = query;
+  const result = await api(`bar/reports/consumption?page=${consumptionPage}&page_size=20&q=${encodeURIComponent(query)}`);
+  const body = $('clientConsumptionBody');
+  body.replaceChildren();
+
+  for (const item of result.items) {
+    const row = node('tr');
+
+    const cardCell = node('td', '', item.card_number);
+    const originCell = node('td', '', item.origin_name || 'VIBZ');
+    const countCell = node('td', '', `${item.order_count} pedido(s)`);
+    const totalCell = node('td');
+    const totalStrong = node('strong', '', formatMoney(item.total_spent));
+    totalStrong.style.color = '#8be5b7';
+    totalCell.append(totalStrong);
+
+    const itemsCell = node('td', '', item.items_summary || '—');
+    itemsCell.style.maxWidth = '250px';
+    itemsCell.style.fontSize = '13px';
+
+    const lastOrderCell = node('td', '', formatDateTime(item.last_order_at));
+
+    const actionCell = node('td');
+    const detailsBtn = node('button', 'primary', 'Ver Extrato');
+    detailsBtn.type = 'button';
+    detailsBtn.style.padding = '5px 10px';
+    detailsBtn.style.fontSize = '12px';
+    detailsBtn.addEventListener('click', () => viewClientDetails(item.card_number));
+    actionCell.append(detailsBtn);
+
+    row.append(cardCell, originCell, countCell, totalCell, itemsCell, lastOrderCell, actionCell);
+    body.append(row);
+  }
+
+  if (!result.items.length) {
+    const row = node('tr');
+    const cell = node('td', '', 'Nenhum consumo registrado com os critérios informados.');
+    cell.colSpan = 7;
+    row.append(cell);
+    body.append(row);
+  }
+
+  renderPager('consumption', result);
+}
+
+async function viewClientDetails(cardIdentifier) {
+  try {
+    const data = await api(`bar/card/${encodeURIComponent(cardIdentifier)}`);
+    const modal = $('clientDetailsModal');
+    $('cdmCardNumber').textContent = `Extrato de Consumo — ${data.card.number}`;
+    $('cdmOrigin').textContent = `Origem: ${data.card.origin_name || 'VIBZ'} · Status: ${data.card.status === 'redeemed' ? 'Entrada confirmada' : 'Emitido'}`;
+    $('cdmTotalSpent').textContent = formatMoney(data.total_spent);
+    $('cdmTotalOrders').textContent = String(data.total_orders);
+
+    const body = $('cdmOrdersBody');
+    body.replaceChildren();
+
+    for (const ord of data.orders) {
+      const row = node('tr');
+      const dateCell = node('td', '', formatDateTime(ord.created_at));
+      const opCell = node('td', '', ord.operator_username || 'Bar');
+      
+      const itemsCell = node('td');
+      const itemsList = ord.items.map((i) => `${i.quantity}x ${i.drink_name} (${formatMoney(i.subtotal)})`).join(', ');
+      itemsCell.textContent = itemsList;
+
+      const totalCell = node('td');
+      const totalStrong = node('strong', '', formatMoney(ord.total_amount));
+      totalStrong.style.color = '#8be5b7';
+      totalCell.append(totalStrong);
+
+      row.append(dateCell, opCell, itemsCell, totalCell);
+      body.append(row);
+    }
+
+    if (!data.orders.length) {
+      const row = node('tr');
+      const cell = node('td', '', 'Nenhum pedido registrado para este cartão.');
+      cell.colSpan = 4;
+      row.append(cell);
+      body.append(row);
+    }
+
+    modal.style.display = 'block';
+    window.scrollTo({ top: modal.offsetTop - 60, behavior: 'smooth' });
+  } catch (err) {
+    notice(err.message, 'error');
+  }
+}
+
+async function refreshDailyBarReport(dateVal) {
+  const chosenDate = dateVal || $('barDailyDate')?.value || '';
+  const result = await api(`bar/reports/daily?date=${encodeURIComponent(chosenDate)}`);
+
+  $('barDailyCurrentDateLabel').textContent = `Data: ${new Date(result.date + 'T12:00:00').toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`;
+  $('kpiBarRevenue').textContent = formatMoney(result.summary.total_revenue);
+  $('kpiBarDrinks').textContent = String(result.summary.total_drinks_sold);
+  $('kpiBarOrders').textContent = String(result.summary.order_count);
+  $('kpiBarCustomers').textContent = String(result.summary.customer_count);
+
+  const drinksBody = $('barDailyDrinksBody');
+  drinksBody.replaceChildren();
+  for (const item of result.drinks_breakdown) {
+    const row = node('tr');
+    row.append(
+      node('td', '', item.drink_name),
+      node('td', '', item.dosage.toUpperCase()),
+      node('td', '', formatMoney(item.avg_unit_price)),
+      node('td', '', String(item.quantity_sold)),
+      node('td', '', formatMoney(item.total_revenue))
+    );
+    drinksBody.append(row);
+  }
+  if (!result.drinks_breakdown.length) {
+    const row = node('tr');
+    const cell = node('td', '', 'Nenhuma venda registrada nesta data.');
+    cell.colSpan = 5;
+    row.append(cell);
+    drinksBody.append(row);
+  }
+
+  const ordersBody = $('barDailyOrdersBody');
+  ordersBody.replaceChildren();
+  for (const ord of result.recent_orders) {
+    const row = node('tr');
+    const timeStr = ord.created_at ? formatDateTime(ord.created_at) : '—';
+    row.append(
+      node('td', '', timeStr),
+      node('td', '', ord.card_number),
+      node('td', '', ord.items_summary || '—'),
+      node('td', '', formatMoney(ord.total_amount)),
+      node('td', '', ord.operator_username || 'Bar')
+    );
+    ordersBody.append(row);
+  }
+  if (!result.recent_orders.length) {
+    const row = node('tr');
+    const cell = node('td', '', 'Nenhum pedido registrado nesta data.');
+    cell.colSpan = 5;
+    row.append(cell);
+    ordersBody.append(row);
+  }
+}
+
+// Event Listeners do Módulo Bar
+$('barSubNavPdv')?.addEventListener('click', () => switchBarSubTab('pdv'));
+$('barSubNavMenu')?.addEventListener('click', () => switchBarSubTab('menu'));
+$('barSubNavClients')?.addEventListener('click', () => switchBarSubTab('clients'));
+$('barSubNavDaily')?.addEventListener('click', () => switchBarSubTab('daily'));
+
+$('barFindCardBtn')?.addEventListener('click', () => findBarCard());
+$('barCardInput')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    findBarCard();
+  }
+});
+
+$('barClearCartBtn')?.addEventListener('click', () => {
+  currentBarCart = [];
+  renderCart();
+});
+$('barSubmitOrderBtn')?.addEventListener('click', submitBarOrder);
+
+$('drinkForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const editId = $('drinkEditId').value;
+  const name = $('drinkName').value.trim();
+  const price = parseFloat($('drinkPrice').value);
+  const dosage = $('drinkDosage').value;
+
+  try {
+    if (editId) {
+      await api(`bar/drinks/${editId}`, {
+        method: 'PATCH',
+        body: { name, price, dosage }
+      });
+      notice(`Bebida "${name}" atualizada com sucesso!`, 'success');
+    } else {
+      await api('bar/drinks', {
+        method: 'POST',
+        body: { name, price, dosage }
+      });
+      notice(`Bebida "${name}" cadastrada com sucesso!`, 'success');
+    }
+    resetDrinkForm();
+    await refreshBarMenu();
+  } catch (err) {
+    notice(err.message, 'error');
+  }
+});
+$('cancelEditDrinkBtn')?.addEventListener('click', resetDrinkForm);
+
+$('clientConsumptionSearchBtn')?.addEventListener('click', () => {
+  consumptionPage = 1;
+  refreshClientConsumption();
+});
+$('clientConsumptionQuery')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    consumptionPage = 1;
+    refreshClientConsumption();
+  }
+});
+$('clientConsumptionRefreshBtn')?.addEventListener('click', () => refreshClientConsumption());
+$('consumptionPrev')?.addEventListener('click', () => {
+  consumptionPage--;
+  refreshClientConsumption();
+});
+$('consumptionNext')?.addEventListener('click', () => {
+  consumptionPage++;
+  refreshClientConsumption();
+});
+$('closeCdmBtn')?.addEventListener('click', () => {
+  $('clientDetailsModal').style.display = 'none';
+});
+
+$('barDailyRefreshBtn')?.addEventListener('click', () => refreshDailyBarReport());
+$('barDailyDate')?.addEventListener('change', () => refreshDailyBarReport());
+
 api('session').then(showLoggedIn).catch(() => showLoggedOut());
+
 

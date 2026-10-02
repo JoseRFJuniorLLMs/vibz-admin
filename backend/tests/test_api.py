@@ -38,7 +38,7 @@ class ApiTests(unittest.TestCase):
         admin_page = self.client.get("/admin/")
         self.assertEqual(admin_page.status_code, 200)
         self.assertEqual(admin_page.headers["cache-control"], "no-store")
-        self.assertIn("admin.js?v=20261002-v7-del-cards", admin_page.text)
+        self.assertIn("admin.js?v=20261002-v8-bar-module", admin_page.text)
         self.assertEqual(self.client.get("/static/admin.js").headers["cache-control"], "no-store")
 
     def test_login_csrf_roles_and_redeem(self):
@@ -245,7 +245,80 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(cards_res.json()["total"], 1)
         self.assertEqual(cards_res.json()["items"][0]["token"], t4)
 
+    def test_bar_drinks_and_orders(self):
+        csrf = self.login()
+
+        # 1. Listar bebidas padrão (seed)
+        drinks_res = self.client.get("/api/bar/drinks")
+        self.assertEqual(drinks_res.status_code, 200)
+        drinks = drinks_res.json()
+        self.assertGreaterEqual(len(drinks), 8)
+        gin = next(d for d in drinks if d["name"] == "Gin Tropical")
+        self.assertEqual(gin["price"], 35.0)
+        self.assertEqual(gin["dosage"], "dose")
+
+        # 2. Cadastrar nova bebida editável
+        new_drink_res = self.client.post(
+            "/api/bar/drinks",
+            json={"name": "Caipiroska de Morango", "price": 32.50, "dosage": "dose"},
+            headers={"X-CSRF-Token": csrf}
+        )
+        self.assertEqual(new_drink_res.status_code, 201)
+        created_drink = new_drink_res.json()
+        drink_id = created_drink["id"]
+
+        # 3. Editar bebida (preço e dosagem)
+        update_res = self.client.patch(
+            f"/api/bar/drinks/{drink_id}",
+            json={"price": 35.00, "dosage": "dose"},
+            headers={"X-CSRF-Token": csrf}
+        )
+        self.assertEqual(update_res.status_code, 200)
+        self.assertEqual(update_res.json()["price"], 35.00)
+
+        # 4. Criar cartão para associar ao consumo do bar
+        origin = self.store.create_origin("Bar Teste", "Restaurante", "admin")
+        card = self.store.issue(origin["id"], 1, None, "admin")[0]
+
+        # 5. Consultar consumo inicial do cartão (deve ser 0)
+        card_cons = self.client.get(f"/api/bar/card/{card['number']}")
+        self.assertEqual(card_cons.status_code, 200)
+        self.assertEqual(card_cons.json()["total_spent"], 0.0)
+        self.assertEqual(card_cons.json()["total_orders"], 0)
+
+        # 6. Lançar pedido de consumo no cartão
+        order_res = self.client.post(
+            "/api/bar/order",
+            json={
+                "card": card["number"],
+                "items": [
+                    {"drink_id": gin["id"], "quantity": 2},
+                    {"drink_id": drink_id, "quantity": 1}
+                ]
+            },
+            headers={"X-CSRF-Token": csrf}
+        )
+        self.assertEqual(order_res.status_code, 201)
+        order_data = order_res.json()
+        # 2x 35.0 + 1x 35.0 = 105.00
+        self.assertEqual(order_data["total_amount"], 105.00)
+        self.assertEqual(len(order_data["items"]), 2)
+
+        # 7. Relatório de consumo por cliente
+        cons_rep = self.client.get(f"/api/bar/reports/consumption?q={card['number']}")
+        self.assertEqual(cons_rep.status_code, 200)
+        self.assertEqual(cons_rep.json()["total"], 1)
+        self.assertEqual(cons_rep.json()["items"][0]["total_spent"], 105.00)
+        self.assertIn("Gin Tropical", cons_rep.json()["items"][0]["items_summary"])
+
+        # 8. Relatório de vendas do dia
+        daily_rep = self.client.get("/api/bar/reports/daily")
+        self.assertEqual(daily_rep.status_code, 200)
+        self.assertGreaterEqual(daily_rep.json()["summary"]["total_revenue"], 105.00)
+        self.assertGreaterEqual(daily_rep.json()["summary"]["total_drinks_sold"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

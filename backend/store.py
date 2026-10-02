@@ -8,7 +8,7 @@ import secrets
 import sqlite3
 import time
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -28,7 +28,10 @@ def utc_now() -> str:
 
 
 def local_today() -> date:
-    return datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+    try:
+        return datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+    except Exception:
+        return (datetime.now(timezone.utc) - timedelta(hours=3)).date()
 
 
 def card_number(number: int) -> str:
@@ -125,7 +128,54 @@ class Store:
                     updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS partners_filter_idx ON partners(category,status,name);
+                CREATE TABLE IF NOT EXISTS drinks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL COLLATE NOCASE,
+                    price REAL NOT NULL,
+                    dosage TEXT NOT NULL CHECK(dosage IN ('dose','garrafa','lata','unidade')),
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS bar_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    card_id INTEGER NOT NULL REFERENCES cards(id),
+                    card_number TEXT NOT NULL,
+                    card_token TEXT NOT NULL,
+                    operator_id TEXT NOT NULL,
+                    operator_username TEXT NOT NULL DEFAULT 'operador',
+                    total_amount REAL NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS bar_orders_card_idx ON bar_orders(card_id);
+                CREATE INDEX IF NOT EXISTS bar_orders_created_idx ON bar_orders(created_at);
+                CREATE TABLE IF NOT EXISTS bar_order_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id INTEGER NOT NULL REFERENCES bar_orders(id) ON DELETE CASCADE,
+                    drink_id INTEGER REFERENCES drinks(id),
+                    drink_name TEXT NOT NULL,
+                    dosage TEXT NOT NULL,
+                    unit_price REAL NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    subtotal REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS bar_order_items_order_idx ON bar_order_items(order_id);
             """)
+            if db.execute("SELECT COUNT(*) FROM drinks").fetchone()[0] == 0:
+                initial_drinks = [
+                    ("Gin Tropical", 35.0, "dose"),
+                    ("Caipirinha Tradicional", 25.0, "dose"),
+                    ("Cerveja Long Neck", 18.0, "garrafa"),
+                    ("Whisky Red Label", 30.0, "dose"),
+                    ("Garrafa Vodka Absolut", 280.0, "garrafa"),
+                    ("Garrafa Gin Tanqueray", 320.0, "garrafa"),
+                    ("Energético Red Bull", 20.0, "lata"),
+                    ("Água Mineral", 8.0, "garrafa"),
+                ]
+                now = utc_now()
+                db.executemany(
+                    "INSERT INTO drinks(name, price, dosage, active, created_at) VALUES (?, ?, ?, 1, ?)",
+                    [(name, price, dosage, now) for name, price, dosage in initial_drinks],
+                )
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=20, isolation_level=None)
@@ -619,3 +669,339 @@ class Store:
                 "partners": partner_stats,
                 "hourly_today": hourly_stats,
             }
+
+    # -------------------------------------------------------------
+    # MÓDULO BAR & CARDÁPIO DE BEBIDAS
+    # -------------------------------------------------------------
+    def list_drinks(self, active_only: bool = False) -> list[dict]:
+        with closing(self._connect()) as db:
+            where = "WHERE active=1" if active_only else ""
+            rows = db.execute(f"SELECT * FROM drinks {where} ORDER BY active DESC, name COLLATE NOCASE ASC").fetchall()
+            return [dict(row) for row in rows]
+
+    def get_drink(self, drink_id: int) -> dict | None:
+        with closing(self._connect()) as db:
+            row = db.execute("SELECT * FROM drinks WHERE id=?", (drink_id,)).fetchone()
+            return dict(row) if row else None
+
+    def create_drink(self, name: str, price: float, dosage: str) -> dict:
+        name = (name or "").strip()
+        if not name:
+            raise StoreError("Nome da bebida é obrigatório")
+        try:
+            price = round(float(price), 2)
+        except (ValueError, TypeError):
+            raise StoreError("Valor da bebida inválido")
+        if price <= 0:
+            raise StoreError("Valor da bebida deve ser maior que zero")
+        dosage = (dosage or "").lower().strip()
+        if dosage not in {"dose", "garrafa", "lata", "unidade"}:
+            raise StoreError("Dosagem deve ser 'dose', 'garrafa', 'lata' ou 'unidade'")
+        now = utc_now()
+        with closing(self._connect()) as db:
+            cur = db.execute(
+                "INSERT INTO drinks(name, price, dosage, active, created_at) VALUES (?, ?, ?, 1, ?)",
+                (name, price, dosage, now),
+            )
+            db.commit()
+            return {"id": cur.lastrowid, "name": name, "price": price, "dosage": dosage, "active": 1, "created_at": now}
+
+    def update_drink(self, drink_id: int, changes: dict) -> dict:
+        valid_fields = {"name", "price", "dosage", "active"}
+        set_parts = []
+        params = []
+        for key, val in changes.items():
+            if key not in valid_fields:
+                continue
+            if key == "name":
+                val = (val or "").strip()
+                if not val:
+                    raise StoreError("Nome não pode ser vazio")
+            elif key == "price":
+                try:
+                    val = round(float(val), 2)
+                except (ValueError, TypeError):
+                    raise StoreError("Valor inválido")
+                if val <= 0:
+                    raise StoreError("Valor deve ser maior que zero")
+            elif key == "dosage":
+                val = str(val).lower().strip()
+                if val not in {"dose", "garrafa", "lata", "unidade"}:
+                    raise StoreError("Dosagem deve ser 'dose', 'garrafa', 'lata' ou 'unidade'")
+            elif key == "active":
+                val = 1 if val else 0
+            set_parts.append(f"{key} = ?")
+            params.append(val)
+        if not set_parts:
+            raise StoreError("Nenhum dado informado para alteração")
+        with closing(self._connect()) as db:
+            params.append(drink_id)
+            cur = db.execute(f"UPDATE drinks SET {', '.join(set_parts)} WHERE id=?", tuple(params))
+            db.commit()
+            if cur.rowcount == 0:
+                raise StoreError("Bebida não encontrada", 404)
+            row = db.execute("SELECT * FROM drinks WHERE id=?", (drink_id,)).fetchone()
+            return dict(row)
+
+    def delete_drink(self, drink_id: int) -> bool:
+        with closing(self._connect()) as db:
+            orders_count = db.execute("SELECT COUNT(*) FROM bar_order_items WHERE drink_id=?", (drink_id,)).fetchone()[0]
+            if orders_count > 0:
+                cur = db.execute("UPDATE drinks SET active=0 WHERE id=?", (drink_id,))
+            else:
+                cur = db.execute("DELETE FROM drinks WHERE id=?", (drink_id,))
+            db.commit()
+            if cur.rowcount == 0:
+                raise StoreError("Bebida não encontrada", 404)
+            return True
+
+    def find_card_any(self, identifier: str, public_base_url: str = "") -> dict:
+        raw = (identifier or "").strip()
+        if not raw:
+            raise StoreError("Informe o cartão ou escaneie o QR", 400)
+        # 1. Se URL
+        if public_base_url and (raw.startswith("http://") or raw.startswith("https://")):
+            try:
+                token = parse_qr(raw, public_base_url)
+                return self.find(token)
+            except Exception:
+                pass
+        # 2. Se token direto
+        if TOKEN_RE.fullmatch(raw):
+            try:
+                return self.find(raw)
+            except Exception:
+                pass
+        # 3. Se número VIBZ-XXXXXX ou apenas números
+        cleaned_num = raw.upper().replace("VIBZ-", "").replace("VIBZ", "").strip()
+        if cleaned_num.isdigit():
+            card_id = int(cleaned_num)
+            with closing(self._connect()) as db:
+                row = db.execute(
+                    """SELECT cards.*, COALESCE(u.username, cards.redeemed_by) AS redeemed_by_username
+                       FROM cards
+                       LEFT JOIN users u ON u.id = CAST(cards.redeemed_by AS INTEGER)
+                       WHERE cards.id=?""",
+                    (card_id,),
+                ).fetchone()
+                if row:
+                    return self._card(row)
+        # 4. Busca exata de token ou fallback
+        with closing(self._connect()) as db:
+            row = db.execute(
+                """SELECT cards.*, COALESCE(u.username, cards.redeemed_by) AS redeemed_by_username
+                   FROM cards
+                   LEFT JOIN users u ON u.id = CAST(cards.redeemed_by AS INTEGER)
+                   WHERE cards.token=?""",
+                (raw,),
+            ).fetchone()
+            if row:
+                return self._card(row)
+        raise StoreError(f"Cartão '{raw}' não encontrado.", 404)
+
+    def create_bar_order(self, card_identifier: str, items: list[dict], operator_uid: str, operator_username: str, public_base_url: str = "") -> dict:
+        card = self.find_card_any(card_identifier, public_base_url)
+        if not items:
+            raise StoreError("Selecione ao menos uma bebida")
+        prepared_items = []
+        total_amount = 0.0
+        with closing(self._connect()) as db:
+            for it in items:
+                drink_id = it.get("drink_id")
+                try:
+                    qty = int(it.get("quantity", 1))
+                except (ValueError, TypeError):
+                    continue
+                if qty <= 0:
+                    continue
+                d_row = db.execute("SELECT * FROM drinks WHERE id=?", (drink_id,)).fetchone()
+                if not d_row:
+                    raise StoreError(f"Bebida ID {drink_id} não encontrada")
+                drink = dict(d_row)
+                unit_price = float(drink["price"])
+                subtotal = round(unit_price * qty, 2)
+                total_amount += subtotal
+                prepared_items.append({
+                    "drink_id": drink["id"],
+                    "drink_name": drink["name"],
+                    "dosage": drink["dosage"],
+                    "unit_price": unit_price,
+                    "quantity": qty,
+                    "subtotal": subtotal,
+                })
+            if not prepared_items:
+                raise StoreError("Quantidade inválida de itens")
+            total_amount = round(total_amount, 2)
+            now = utc_now()
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                order_cur = db.execute(
+                    """INSERT INTO bar_orders(card_id, card_number, card_token, operator_id, operator_username, total_amount, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (card["id"], card["number"], card["token"], str(operator_uid), operator_username, total_amount, now),
+                )
+                order_id = order_cur.lastrowid
+                for item in prepared_items:
+                    db.execute(
+                        """INSERT INTO bar_order_items(order_id, drink_id, drink_name, dosage, unit_price, quantity, subtotal)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (order_id, item["drink_id"], item["drink_name"], item["dosage"], item["unit_price"], item["quantity"], item["subtotal"]),
+                    )
+                db.commit()
+                return {
+                    "id": order_id,
+                    "card_id": card["id"],
+                    "card_number": card["number"],
+                    "card_token": card["token"],
+                    "origin_name": card["origin_name"],
+                    "operator_username": operator_username,
+                    "total_amount": total_amount,
+                    "created_at": now,
+                    "items": prepared_items,
+                }
+            except Exception:
+                db.rollback()
+                raise
+
+    def get_card_consumption(self, card_identifier: str, public_base_url: str = "") -> dict:
+        card = self.find_card_any(card_identifier, public_base_url)
+        with closing(self._connect()) as db:
+            orders = db.execute(
+                """SELECT id, total_amount, operator_username, created_at
+                   FROM bar_orders WHERE card_id=? ORDER BY created_at DESC, id DESC""",
+                (card["id"],)
+            ).fetchall()
+            orders_list = []
+            total_spent = 0.0
+            for ord_row in orders:
+                ord_dict = dict(ord_row)
+                items = db.execute(
+                    """SELECT drink_name, dosage, unit_price, quantity, subtotal
+                       FROM bar_order_items WHERE order_id=? ORDER BY id ASC""",
+                    (ord_dict["id"],)
+                ).fetchall()
+                ord_dict["items"] = [dict(it) for it in items]
+                total_spent += float(ord_dict["total_amount"])
+                orders_list.append(ord_dict)
+
+            summary_items = db.execute(
+                """SELECT drink_name, dosage, SUM(quantity) as total_qty, SUM(subtotal) as total_subtotal
+                   FROM bar_order_items boi
+                   JOIN bar_orders bo ON bo.id = boi.order_id
+                   WHERE bo.card_id=?
+                   GROUP BY drink_name, dosage
+                   ORDER BY total_qty DESC""",
+                (card["id"],)
+            ).fetchall()
+
+            return {
+                "card": card,
+                "total_spent": round(total_spent, 2),
+                "total_orders": len(orders_list),
+                "summary_items": [dict(it) for it in summary_items],
+                "orders": orders_list,
+            }
+
+    def list_all_consumption(self, page: int = 1, page_size: int = 20, q: str = "") -> dict:
+        with closing(self._connect()) as db:
+            where_clauses = []
+            params = []
+            if q.strip():
+                param_q = f"%{q.strip()}%"
+                where_clauses.append("(c.id = ? OR c.origin_name LIKE ? OR bo.card_number LIKE ?)")
+                clean = q.upper().replace("VIBZ-", "").replace("VIBZ", "").strip()
+                cid = int(clean) if clean.isdigit() else -1
+                params.extend([cid, param_q, param_q])
+            where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+            total = db.execute(f"SELECT COUNT(DISTINCT bo.card_id) FROM bar_orders bo JOIN cards c ON c.id = bo.card_id {where}", tuple(params)).fetchone()[0]
+
+            query = f"""
+                SELECT bo.card_id, bo.card_number, c.origin_name,
+                       COUNT(DISTINCT bo.id) as order_count,
+                       SUM(bo.total_amount) as total_spent,
+                       MAX(bo.created_at) as last_order_at,
+                       (SELECT GROUP_CONCAT(boi.quantity || 'x ' || boi.drink_name, ', ')
+                        FROM bar_order_items boi
+                        JOIN bar_orders bo2 ON bo2.id = boi.order_id
+                        WHERE bo2.card_id = bo.card_id) as items_summary
+                FROM bar_orders bo
+                JOIN cards c ON c.id = bo.card_id
+                {where}
+                GROUP BY bo.card_id, bo.card_number, c.origin_name
+                ORDER BY last_order_at DESC, total_spent DESC
+                LIMIT ? OFFSET ?
+            """
+            rows = db.execute(query, tuple(params) + (page_size, (page - 1) * page_size)).fetchall()
+            items = []
+            for r in rows:
+                rd = dict(r)
+                rd["total_spent"] = round(float(rd["total_spent"] or 0), 2)
+                items.append(rd)
+            return self._page(items, total, page, page_size)
+
+    def daily_bar_report(self, date_str: str | None = None) -> dict:
+        if not date_str:
+            date_str = local_today().isoformat()
+        try:
+            parsed_date = date.fromisoformat(date_str)
+        except Exception:
+            parsed_date = local_today()
+            date_str = parsed_date.isoformat()
+
+        try:
+            tz = ZoneInfo("America/Sao_Paulo")
+        except Exception:
+            tz = timezone(timedelta(hours=-3))
+        day_start_local = datetime.combine(parsed_date, datetime.min.time(), tzinfo=tz)
+        day_end_local = datetime.combine(parsed_date, datetime.max.time(), tzinfo=tz)
+        start_utc = day_start_local.astimezone(timezone.utc).isoformat(timespec="seconds")
+        end_utc = day_end_local.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+        with closing(self._connect()) as db:
+            summary_row = db.execute(
+                """SELECT COUNT(DISTINCT bo.id) as order_count,
+                          COUNT(DISTINCT bo.card_id) as customer_count,
+                          COALESCE(SUM(bo.total_amount), 0.0) as total_revenue
+                   FROM bar_orders bo
+                   WHERE bo.created_at >= ? AND bo.created_at <= ?""",
+                (start_utc, end_utc),
+            ).fetchone()
+
+            items_rows = db.execute(
+                """SELECT boi.drink_name, boi.dosage,
+                          SUM(boi.quantity) as quantity_sold,
+                          ROUND(AVG(boi.unit_price), 2) as avg_unit_price,
+                          ROUND(SUM(boi.subtotal), 2) as total_revenue
+                   FROM bar_order_items boi
+                   JOIN bar_orders bo ON bo.id = boi.order_id
+                   WHERE bo.created_at >= ? AND bo.created_at <= ?
+                   GROUP BY boi.drink_name, boi.dosage
+                   ORDER BY total_revenue DESC, quantity_sold DESC""",
+                (start_utc, end_utc),
+            ).fetchall()
+
+            total_drinks_sold = sum(r["quantity_sold"] for r in items_rows)
+
+            recent_orders = db.execute(
+                """SELECT bo.id, bo.card_number, bo.operator_username, bo.total_amount, bo.created_at,
+                          (SELECT GROUP_CONCAT(boi.quantity || 'x ' || boi.drink_name, ', ')
+                           FROM bar_order_items boi WHERE boi.order_id = bo.id) as items_summary
+                   FROM bar_orders bo
+                   WHERE bo.created_at >= ? AND bo.created_at <= ?
+                   ORDER BY bo.created_at DESC, bo.id DESC LIMIT 50""",
+                (start_utc, end_utc),
+            ).fetchall()
+
+            return {
+                "date": date_str,
+                "summary": {
+                    "total_revenue": round(float(summary_row["total_revenue"]), 2),
+                    "total_drinks_sold": total_drinks_sold,
+                    "order_count": summary_row["order_count"],
+                    "customer_count": summary_row["customer_count"],
+                },
+                "drinks_breakdown": [dict(r) for r in items_rows],
+                "recent_orders": [dict(r) for r in recent_orders],
+            }
+
