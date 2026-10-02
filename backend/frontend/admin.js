@@ -210,6 +210,7 @@ async function refreshUsers() {
   const body = $('usersBody');
   body.replaceChildren();
   for (const user of result.items) {
+    const row = node('tr');
     let roleTxt = 'Portaria';
     if (user.role === 'admin') roleTxt = 'Administrador';
     else if (user.role === 'bar') roleTxt = 'Bar';
