@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#0b0b12">
   <meta name="robots" content="noindex,nofollow">
-  <link rel="stylesheet" href="../static/admin.css?v=20261002-v15-audit-hardened">
+  <link rel="stylesheet" href="../static/admin.css?v=20261002-v17-cards-consumo">
   <script src="../static/vendor/jsQR.js" defer></script>
-  <script type="module" src="../static/admin.js?v=20261002-v15-audit-hardened"></script>
+  <script type="module" src="../static/admin.js?v=20261002-v17-cards-consumo"></script>
 </head>
 <body>
   <header class="topbar">
@@ -102,38 +102,78 @@
       </section>
 
       <section id="cardsTab" class="tab-panel" hidden>
-        <div class="panel-head">
-          <div><h2>Cartões recentes</h2><p>Consulte os últimos números e identifique a origem de cada um.</p></div>
-          <div class="button-row" style="margin:0">
-            <button id="exportRecentGrafica" type="button">Exportar página para gráfica (ZIP) ↓</button>
-            <button id="refreshCards" type="button">Atualizar</button>
+        <div class="button-row" style="margin:0 0 16px 0;gap:8px">
+          <button id="cardsSubNavRecent" type="button" class="primary cards-sub-btn">📋 Cartões recentes</button>
+          <button id="cardsSubNavConsumption" type="button" class="cards-sub-btn">🍸 Cartões Consumo</button>
+        </div>
+
+        <!-- Subpainel 1: Cartões Recentes -->
+        <div id="cardsRecentSubPanel">
+          <div class="panel-head">
+            <div><h2>Cartões recentes</h2><p>Consulte os últimos números e identifique a origem de cada um.</p></div>
+            <div class="button-row" style="margin:0">
+              <button id="exportRecentGrafica" type="button">Exportar página para gráfica (ZIP) ↓</button>
+              <button id="refreshCards" type="button">Atualizar</button>
+            </div>
+          </div>
+          <div id="cardsBatchToolbar" class="panel" style="margin-bottom:12px;background:#2d1420;border:1px solid #ff4b6e88;display:none;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:10px 16px">
+            <div style="display:flex;align-items:center;gap:10px">
+              <span style="font-size:14px;color:#fff"><strong id="selectedCardsCount" style="color:#ff6b8b">0</strong> cartão(ões) selecionado(s)</span>
+            </div>
+            <div class="button-row" style="margin:0;gap:8px">
+              <button id="deleteBatchCardsBtn" type="button" class="danger-btn" style="padding:7px 14px;font-size:13px;font-weight:700">🗑️ Apagar selecionados em lote</button>
+              <button id="clearSelectionCardsBtn" type="button" style="padding:7px 12px;font-size:13px">Desmarcar todos</button>
+            </div>
+          </div>
+          <div class="panel table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:36px;text-align:center"><input type="checkbox" id="selectAllCards" title="Selecionar todos da página" style="width:16px;height:16px;min-height:unset;margin:0;cursor:pointer"></th>
+                  <th>Cartão</th>
+                  <th>Origem</th>
+                  <th>Status</th>
+                  <th>Emitido</th>
+                  <th style="min-width:320px">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="cardsBody"></tbody>
+            </table>
+          </div>
+          <div class="pager"><button id="cardsPrev" type="button">Anterior</button><span id="cardsPage"></span><button id="cardsNext" type="button">Próxima</button></div>
+        </div>
+
+        <!-- Subpainel 2: Cartões Consumo -->
+        <div id="cardsConsumptionSubPanel" hidden>
+          <div class="panel-head">
+            <div><h2>Cartões Consumo</h2><p>Histórico e detalhamento de consumo de bebidas no bar por cartão.</p></div>
+            <div class="button-row" style="margin:0;gap:8px">
+              <input id="consumptionSearch" type="search" placeholder="🔍 Buscar cartão ou origem..." style="min-width:240px;padding:8px 12px;font-size:13px">
+              <button id="refreshConsumptionBtn" type="button">Atualizar</button>
+            </div>
+          </div>
+          <div class="panel table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Cartão</th>
+                  <th>Origem</th>
+                  <th>Total Consumido</th>
+                  <th>Pedidos</th>
+                  <th>Último Consumo</th>
+                  <th>Resumo das Bebidas</th>
+                  <th style="min-width:140px">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="consumptionCardsBody"></tbody>
+            </table>
+          </div>
+          <div class="pager">
+            <button id="consumptionPrev" type="button">Anterior</button>
+            <span id="consumptionPage"></span>
+            <button id="consumptionNext" type="button">Próxima</button>
           </div>
         </div>
-        <div id="cardsBatchToolbar" class="panel" style="margin-bottom:12px;background:#2d1420;border:1px solid #ff4b6e88;display:none;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:10px 16px">
-          <div style="display:flex;align-items:center;gap:10px">
-            <span style="font-size:14px;color:#fff"><strong id="selectedCardsCount" style="color:#ff6b8b">0</strong> cartão(ões) selecionado(s)</span>
-          </div>
-          <div class="button-row" style="margin:0;gap:8px">
-            <button id="deleteBatchCardsBtn" type="button" class="danger-btn" style="padding:7px 14px;font-size:13px;font-weight:700">🗑️ Apagar selecionados em lote</button>
-            <button id="clearSelectionCardsBtn" type="button" style="padding:7px 12px;font-size:13px">Desmarcar todos</button>
-          </div>
-        </div>
-        <div class="panel table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th style="width:36px;text-align:center"><input type="checkbox" id="selectAllCards" title="Selecionar todos da página" style="width:16px;height:16px;min-height:unset;margin:0;cursor:pointer"></th>
-                <th>Cartão</th>
-                <th>Origem</th>
-                <th>Status</th>
-                <th>Emitido</th>
-                <th style="min-width:270px">Ações</th>
-              </tr>
-            </thead>
-            <tbody id="cardsBody"></tbody>
-          </table>
-        </div>
-        <div class="pager"><button id="cardsPrev" type="button">Anterior</button><span id="cardsPage"></span><button id="cardsNext" type="button">Próxima</button></div>
       </section>
 
       <section id="scannedTab" class="tab-panel" hidden>
@@ -813,7 +853,21 @@
         </div>
         <div class="pager"><button id="usersPrev" type="button">Anterior</button><span id="usersPage"></span><button id="usersNext" type="button">Próxima</button></div>
       </section>
-    </section>
+    <!-- MODAL DE CONSUMO DETALHADO DO CARTÃO -->
+    <div id="cardConsumptionModal" class="modal-backdrop" hidden>
+      <div class="modal-box">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1px solid #ffffff18;padding-bottom:14px;margin-bottom:18px">
+          <div>
+            <h3 id="modalCardTitle" style="margin:0;font-size:22px;color:#fff;letter-spacing:-0.02em">🍸 Consumo do Cartão</h3>
+            <p id="modalCardSubtitle" style="margin:4px 0 0 0;font-size:13px;color:#a09cb0">Carregando detalhes...</p>
+          </div>
+          <button id="closeConsumptionModal" type="button" class="text-button" style="font-size:24px;line-height:1;padding:0 8px;cursor:pointer;color:#bbb" title="Fechar (Esc)">✕</button>
+        </div>
+        <div id="modalConsumptionContent">
+          <!-- Conteúdo gerado dinamicamente via JS -->
+        </div>
+      </div>
+    </div>
   </main>
 </body>
 </html>

@@ -478,21 +478,33 @@ class Store:
         if not TOKEN_RE.fullmatch(token):
             raise StoreError("QR inválido")
         db = self._connect()
+        in_tx = False
         try:
             row = db.execute("SELECT id, token FROM cards WHERE token=?", (token,)).fetchone()
             if not row:
                 raise StoreError("Cartão não encontrado", 404)
             card_id = row["id"]
-            has_orders = db.execute("SELECT COUNT(*) FROM bar_orders WHERE card_id=?", (card_id,)).fetchone()[0]
-            if has_orders > 0:
-                raise StoreError("Este cartão possui consumos registrados no bar e não pode ser excluído.", 400)
             card_info = {"number": card_number(card_id), "token": row["token"]}
             db.execute("BEGIN IMMEDIATE")
+            in_tx = True
+            # Exclui itens de consumo do bar deste cartão se existirem
+            db.execute(
+                "DELETE FROM bar_order_items WHERE order_id IN (SELECT id FROM bar_orders WHERE card_id=?)",
+                (card_id,),
+            )
+            # Exclui pedidos de consumo do bar deste cartão se existirem
+            db.execute("DELETE FROM bar_orders WHERE card_id=?", (card_id,))
+            # Exclui o próprio cartão
             db.execute("DELETE FROM cards WHERE id=?", (card_id,))
             db.commit()
+            in_tx = False
             return card_info
         except Exception:
-            db.rollback()
+            if in_tx:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
             raise
         finally:
             db.close()
@@ -502,21 +514,33 @@ class Store:
         if not valid_tokens:
             raise StoreError("Nenhum cartão válido selecionado para exclusão", 400)
         db = self._connect()
+        in_tx = False
         try:
             placeholders = ",".join("?" for _ in valid_tokens)
-            has_orders = db.execute(
-                f"SELECT COUNT(*) FROM bar_orders bo JOIN cards c ON c.id=bo.card_id WHERE c.token IN ({placeholders})",
-                tuple(valid_tokens),
-            ).fetchone()[0]
-            if has_orders > 0:
-                raise StoreError("Alguns dos cartões selecionados possuem consumos registrados no bar e não podem ser excluídos.", 400)
             db.execute("BEGIN IMMEDIATE")
+            in_tx = True
+            # Exclui itens de consumo de bar associados aos cartões
+            db.execute(
+                f"DELETE FROM bar_order_items WHERE order_id IN (SELECT bo.id FROM bar_orders bo JOIN cards c ON c.id=bo.card_id WHERE c.token IN ({placeholders}))",
+                tuple(valid_tokens),
+            )
+            # Exclui pedidos de bar associados aos cartões
+            db.execute(
+                f"DELETE FROM bar_orders WHERE card_id IN (SELECT c.id FROM cards c WHERE c.token IN ({placeholders}))",
+                tuple(valid_tokens),
+            )
+            # Exclui os cartões do banco
             cursor = db.execute(f"DELETE FROM cards WHERE token IN ({placeholders})", tuple(valid_tokens))
             deleted_count = cursor.rowcount
             db.commit()
+            in_tx = False
             return deleted_count
         except Exception:
-            db.rollback()
+            if in_tx:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
             raise
         finally:
             db.close()

@@ -38,7 +38,7 @@ class ApiTests(unittest.TestCase):
         admin_page = self.client.get("/admin/")
         self.assertEqual(admin_page.status_code, 200)
         self.assertEqual(admin_page.headers["cache-control"], "no-store")
-        self.assertIn("admin.js?v=20261002-v15-audit-hardened", admin_page.text)
+        self.assertIn("admin.js?v=20261002-v17-cards-consumo", admin_page.text)
         self.assertEqual(self.client.get("/static/admin.js").headers["cache-control"], "no-store")
 
     def test_login_csrf_roles_and_redeem(self):
@@ -291,16 +291,15 @@ class ApiTests(unittest.TestCase):
             json={"card": t4, "items": [{"drink_id": drinks[0]["id"], "quantity": 1}]},
             headers={"X-CSRF-Token": csrf}
         )
-        # Cartão t4 com consumo no bar não pode ser deletado (400)
+        # Cartão t4 com consumo no bar agora é excluído com sucesso pelo admin em cascata
         del_t4 = self.client.delete(f"/api/cards/{t4}", headers={"X-CSRF-Token": csrf})
-        self.assertEqual(del_t4.status_code, 400)
-        self.assertIn("consumo", del_t4.json()["detail"])
+        self.assertEqual(del_t4.status_code, 200)
+        self.assertEqual(del_t4.json()["token"], t4)
 
-        # Verificar que t4 continua no banco
+        # Verificar que t4 não existe mais no banco
         cards_res = self.client.get(f"/api/cards?origin_id={origin['id']}")
         self.assertEqual(cards_res.status_code, 200)
-        self.assertEqual(cards_res.json()["total"], 1)
-        self.assertEqual(cards_res.json()["items"][0]["token"], t4)
+        self.assertEqual(cards_res.json()["total"], 0)
 
     def test_bar_drinks_and_orders(self):
         csrf = self.login()

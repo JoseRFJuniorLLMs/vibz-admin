@@ -226,3 +226,53 @@ a{color:#ff9d77}
   background: #332b40;
 }
 
+/* Sub-navegação em abas internas */
+.cards-sub-btn {
+  background: #191624;
+  border: 1px solid #3d3448;
+  color: #c5bfcd;
+  padding: 8px 16px;
+  font-size: 13px;
+  border-radius: 9px;
+  transition: all 0.15s ease;
+}
+.cards-sub-btn.primary {
+  background: linear-gradient(120deg, #ff8a31, #f44883);
+  border-color: transparent;
+  color: #180b13;
+  font-weight: 800;
+}
+
+/* Modal de Consumo Detalhado */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 5, 8, 0.85);
+  backdrop-filter: blur(8px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.modal-backdrop[hidden] {
+  display: none !important;
+}
+.modal-box {
+  background: #14121e;
+  border: 1px solid #4a3e5c;
+  border-radius: 18px;
+  box-shadow: 0 25px 70px rgba(0, 0, 0, 0.85);
+  max-width: 760px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 24px;
+  position: relative;
+  animation: modalPop 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes modalPop {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+

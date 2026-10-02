@@ -58,6 +58,11 @@ function formatDateTime(value) {
   });
 }
 
+function formatMoney(value) {
+  const num = Number(value) || 0;
+  return `R$ ${num.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+}
+
 function node(tag, className = '', text = '') {
   const result = document.createElement(tag);
   if (className) result.className = className;
@@ -80,7 +85,16 @@ async function api(path, {method = 'GET', body} = {}) {
   });
   if (!response.ok) {
     let detail = 'Não foi possível concluir a operação.';
-    try { detail = (await response.json()).detail || detail; } catch (_) { /* keep default */ }
+    try {
+      const data = await response.json();
+      if (typeof data?.detail === 'string') {
+        detail = data.detail;
+      } else if (Array.isArray(data?.detail) && data.detail.length > 0) {
+        detail = data.detail.map((d) => d.msg || JSON.stringify(d)).join('; ');
+      } else if (typeof data?.message === 'string') {
+        detail = data.message;
+      }
+    } catch (_) { /* keep default */ }
     if (response.status === 401 && path !== 'login') showLoggedOut();
     throw new Error(detail);
   }
@@ -508,6 +522,10 @@ function statusLabel(card) {
 
 async function refreshCards() {
   const result = await api(`cards?page=${cardsPage}&page_size=20`);
+  if (result.items.length === 0 && result.total > 0 && cardsPage > 1) {
+    cardsPage = Math.max(1, Math.ceil(result.total / 20));
+    return refreshCards();
+  }
   const cards = result.items;
   currentCardsList = cards;
   const body = $('cardsBody');
@@ -602,6 +620,19 @@ async function refreshCards() {
       });
       actionWrap.append(redeemBtn);
     }
+
+    // Botão Consumo
+    const consBtn = node('button', '', '🍸 Consumo');
+    consBtn.type = 'button';
+    consBtn.style.padding = '5px 9px';
+    consBtn.style.fontSize = '12px';
+    consBtn.style.background = '#281a33';
+    consBtn.style.borderColor = '#bd468a';
+    consBtn.style.color = '#ff9e73';
+    consBtn.style.fontWeight = '700';
+    consBtn.title = `Ver consumo e extrato do cartão ${card.number}`;
+    consBtn.addEventListener('click', () => openCardConsumption(card.number));
+    actionWrap.append(consBtn);
 
     // Botão individual Apagar
     const delBtn = node('button', 'danger-btn', '🗑️ Apagar');
@@ -1727,6 +1758,246 @@ window.addEventListener('pagehide', () => {
 });
 
 // =============================================================
+// SUB-ABA CARTÕES CONSUMO & MODAL DE CONSUMO DO CARTÃO
+// =============================================================
+let cardsSubTab = 'recent';
+let consumptionCardsPage = 1;
+let consumptionCardsSearchTimer = null;
+
+function switchCardsSubTab(tab) {
+  cardsSubTab = tab;
+  const isRecent = tab === 'recent';
+  $('cardsSubNavRecent')?.classList.toggle('primary', isRecent);
+  $('cardsSubNavConsumption')?.classList.toggle('primary', !isRecent);
+  if ($('cardsRecentSubPanel')) $('cardsRecentSubPanel').hidden = !isRecent;
+  if ($('cardsConsumptionSubPanel')) $('cardsConsumptionSubPanel').hidden = isRecent;
+  if (!isRecent) {
+    refreshConsumptionCards().catch((e) => notice(e.message, 'error'));
+  }
+}
+
+$('cardsSubNavRecent')?.addEventListener('click', () => switchCardsSubTab('recent'));
+$('cardsSubNavConsumption')?.addEventListener('click', () => switchCardsSubTab('consumption'));
+
+async function refreshConsumptionCards() {
+  const q = ($('consumptionSearch')?.value || '').trim();
+  const data = await api(`bar/reports/consumption?page=${consumptionCardsPage}&page_size=20&q=${encodeURIComponent(q)}`);
+  const tbody = $('consumptionCardsBody');
+  if (!tbody) return;
+  tbody.replaceChildren();
+
+  const items = data.items || [];
+  for (const item of items) {
+    const tr = node('tr');
+
+    const tdCard = node('td', '', item.card_number);
+    tdCard.style.fontFamily = 'monospace';
+    tdCard.style.fontWeight = '700';
+
+    const tdOrigin = node('td', '', item.origin_name || '—');
+
+    const tdTotal = node('td', '', formatMoney(item.total_spent));
+    tdTotal.style.color = '#8be5b7';
+    tdTotal.style.fontWeight = '800';
+
+    const tdCount = node('td', '', `${item.order_count} pedido(s)`);
+
+    const tdLast = node('td', '', formatDateTime(item.last_order_at));
+    tdLast.style.fontSize = '13px';
+    tdLast.style.color = '#ccc';
+
+    const tdItems = node('td', '', item.items_summary || '—');
+    tdItems.style.fontSize = '12px';
+    tdItems.style.color = '#ff9e73';
+    tdItems.style.maxWidth = '260px';
+
+    const tdActions = node('td');
+    const viewBtn = node('button', 'primary', '🍸 Ver Detalhes');
+    viewBtn.type = 'button';
+    viewBtn.style.padding = '5px 11px';
+    viewBtn.style.fontSize = '12px';
+    viewBtn.addEventListener('click', () => openCardConsumption(item.card_number));
+    tdActions.append(viewBtn);
+
+    tr.append(tdCard, tdOrigin, tdTotal, tdCount, tdLast, tdItems, tdActions);
+    tbody.append(tr);
+  }
+
+  if (!items.length) {
+    const tr = node('tr');
+    const td = node('td', '', 'Nenhum cartão com consumo registrado até o momento.');
+    td.colSpan = 7;
+    td.style.textAlign = 'center';
+    td.style.padding = '24px';
+    td.style.color = '#9a94a6';
+    tr.append(td);
+    tbody.append(tr);
+  }
+
+  if ($('consumptionPage')) $('consumptionPage').textContent = `Página ${data.page} de ${data.pages || 1}`;
+  if ($('consumptionPrev')) $('consumptionPrev').disabled = data.page <= 1;
+  if ($('consumptionNext')) $('consumptionNext').disabled = data.page >= (data.pages || 1);
+}
+
+$('consumptionSearch')?.addEventListener('input', () => {
+  clearTimeout(consumptionCardsSearchTimer);
+  consumptionCardsSearchTimer = setTimeout(() => {
+    consumptionCardsPage = 1;
+    refreshConsumptionCards().catch((e) => notice(e.message, 'error'));
+  }, 250);
+});
+
+$('refreshConsumptionBtn')?.addEventListener('click', () => {
+  refreshConsumptionCards().catch((e) => notice(e.message, 'error'));
+});
+
+$('consumptionPrev')?.addEventListener('click', () => {
+  if (consumptionCardsPage > 1) {
+    consumptionCardsPage--;
+    refreshConsumptionCards().catch((e) => notice(e.message, 'error'));
+  }
+});
+
+$('consumptionNext')?.addEventListener('click', () => {
+  consumptionCardsPage++;
+  refreshConsumptionCards().catch((e) => notice(e.message, 'error'));
+});
+
+async function openCardConsumption(cardIdentifier) {
+  const modal = $('cardConsumptionModal');
+  const title = $('modalCardTitle');
+  const subtitle = $('modalCardSubtitle');
+  const content = $('modalConsumptionContent');
+  if (!modal || !content) return;
+
+  modal.hidden = false;
+  title.textContent = `🍸 Consumo — ${cardIdentifier}`;
+  subtitle.textContent = 'Carregando detalhes do consumo...';
+  content.innerHTML = '<div style="text-align:center;padding:36px;color:#aaa">Carregando dados do consumo no bar...</div>';
+
+  try {
+    const data = await api(`bar/card/${encodeURIComponent(cardIdentifier)}`);
+    const card = data.card;
+    title.textContent = `🍸 Consumo — Cartão ${card.number}`;
+    const statusTxt = card.status === 'redeemed' ? 'Entrada confirmada' : (card.expired ? 'Vencido' : 'Válido');
+    subtitle.textContent = `Origem: ${card.origin_name || 'VIBZ'} • Status: ${statusTxt}${card.wristband ? ` • Pulseira: ${card.wristband}` : ''}`;
+
+    let html = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px">
+        <div style="background:#1c1929;border:1px solid #3c344d;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:4px">
+          <span style="font-size:11px;color:#a8a0b0;text-transform:uppercase;font-weight:700">Total Consumido</span>
+          <span style="font-size:24px;font-weight:900;color:#8be5b7">${formatMoney(data.total_spent)}</span>
+        </div>
+        <div style="background:#1c1929;border:1px solid #3c344d;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:4px">
+          <span style="font-size:11px;color:#a8a0b0;text-transform:uppercase;font-weight:700">Qtd. de Pedidos</span>
+          <span style="font-size:24px;font-weight:900;color:#fff">${data.total_orders} pedido(s)</span>
+        </div>
+        <div style="background:#1c1929;border:1px solid #3c344d;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:4px">
+          <span style="font-size:11px;color:#a8a0b0;text-transform:uppercase;font-weight:700">Entrada na Portaria</span>
+          <span style="font-size:14px;font-weight:700;color:#fff;margin-top:6px">${card.redeemed_at ? formatDateTime(card.redeemed_at) : 'Ainda não confirmada'}</span>
+        </div>
+      </div>
+    `;
+
+    if (data.orders.length === 0) {
+      html += `
+        <div style="background:#1a1726;border:1px dashed #4b425d;border-radius:14px;padding:32px;text-align:center;margin-top:10px">
+          <div style="font-size:36px;margin-bottom:8px">🍸</div>
+          <h4 style="margin:0 0 6px 0;font-size:16px;color:#fff">Nenhum consumo registrado no bar</h4>
+          <p style="margin:0 0 16px 0;font-size:13px;color:#9b95a8">Este cartão ainda não realizou pedidos no bar do evento.</p>
+          <button id="modalGoToBarPdv" type="button" class="primary" style="padding:9px 18px;font-size:13px">🛒 Lançar pedido para este cartão no Bar</button>
+        </div>
+      `;
+    } else {
+      if (data.summary_items && data.summary_items.length > 0) {
+        html += `
+          <div style="margin-bottom:20px">
+            <h4 style="margin:0 0 10px 0;font-size:15px;color:#ff9e73">📊 Resumo Consolidado de Bebidas</h4>
+            <div style="background:#100e18;border:1px solid #362e43;border-radius:10px;overflow:hidden">
+              <table style="width:100%;margin:0;min-width:unset">
+                <thead>
+                  <tr style="background:#1a1626">
+                    <th style="padding:8px 12px">Bebida</th>
+                    <th style="padding:8px 12px">Formato</th>
+                    <th style="padding:8px 12px;text-align:center">Qtd Total</th>
+                    <th style="padding:8px 12px;text-align:right">Subtotal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${data.summary_items.map(it => `
+                    <tr>
+                      <td style="padding:8px 12px;font-weight:700;color:#fff">${it.drink_name}</td>
+                      <td style="padding:8px 12px;color:#aaa">${it.dosage}</td>
+                      <td style="padding:8px 12px;text-align:center;font-weight:800;color:#ff9e73">${it.total_qty}</td>
+                      <td style="padding:8px 12px;text-align:right;font-weight:800;color:#8be5b7">${formatMoney(it.total_subtotal)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `;
+      }
+
+      html += `
+        <div>
+          <h4 style="margin:0 0 10px 0;font-size:15px;color:#fff">🧾 Histórico Cronológico de Pedidos</h4>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            ${data.orders.map(ord => `
+              <div style="background:#181524;border:1px solid #3d354b;border-radius:12px;padding:14px">
+                <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #2d2639;padding-bottom:8px;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+                  <div>
+                    <strong style="color:#fff;font-size:14px">Pedido #${ord.id}</strong>
+                    <span style="color:#a8a0b0;font-size:12px;margin-left:8px">🕒 ${formatDateTime(ord.created_at)}</span>
+                    <span style="color:#a8a0b0;font-size:12px;margin-left:8px">• Atendente: <strong style="color:#ff9e73">${ord.operator_username || 'bar'}</strong></span>
+                  </div>
+                  <span style="font-size:15px;font-weight:800;color:#8be5b7">${formatMoney(ord.total_amount)}</span>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:6px">
+                  ${(ord.items || []).map(it => `
+                    <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:3px 0">
+                      <span style="color:#e4e0ea"><strong style="color:#ff9e73">${it.quantity}x</strong> ${it.drink_name} <small style="color:#8e889b">(${it.dosage})</small></span>
+                      <span style="color:#ccc;font-size:12px">${formatMoney(it.unit_price)} un <strong style="color:#fff;margin-left:6px">${formatMoney(it.subtotal)}</strong></span>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    content.innerHTML = html;
+
+    $('modalGoToBarPdv')?.addEventListener('click', async () => {
+      closeConsumptionModal();
+      switchTab('bar');
+      switchBarSubTab('pdv');
+      await findBarCard(card.number);
+    });
+
+  } catch (err) {
+    content.innerHTML = `<div style="color:#ff8790;padding:24px;text-align:center">Erro ao carregar consumo: ${err.message}</div>`;
+  }
+}
+
+function closeConsumptionModal() {
+  const modal = $('cardConsumptionModal');
+  if (modal) modal.hidden = true;
+}
+
+$('closeConsumptionModal')?.addEventListener('click', closeConsumptionModal);
+$('cardConsumptionModal')?.addEventListener('click', (e) => {
+  if (e.target === $('cardConsumptionModal')) closeConsumptionModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && $('cardConsumptionModal') && !$('cardConsumptionModal').hidden) {
+    closeConsumptionModal();
+  }
+});
+
+// =============================================================
 // MÓDULO BAR & CARDÁPIO DE BEBIDAS
 // =============================================================
 let currentDrinks = [];
@@ -1736,10 +2007,6 @@ let barSubTab = 'pdv';
 let consumptionPage = 1;
 let consumptionQuery = '';
 
-function formatMoney(value) {
-  const num = Number(value) || 0;
-  return `R$ ${num.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
-}
 
 async function initBarModule() {
   const dateInput = $('barDailyDate');
