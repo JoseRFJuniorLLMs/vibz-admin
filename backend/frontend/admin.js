@@ -17,6 +17,32 @@ let scanBusy = false;
 let lastFrame = 0;
 let detectorSupported = 'BarcodeDetector' in window;
 let scannedInterval = null;
+let selectedCardTokens = new Set();
+
+function updateBatchToolbar() {
+  const toolbar = $('cardsBatchToolbar');
+  const countEl = $('selectedCardsCount');
+  const selectAll = $('selectAllCards');
+  const count = selectedCardTokens.size;
+
+  if (countEl) countEl.textContent = count;
+  if (toolbar) toolbar.style.display = count > 0 ? 'flex' : 'none';
+
+  if (selectAll && currentCardsList.length > 0) {
+    const pageTokens = currentCardsList.map((c) => c.token);
+    const selectedOnPage = pageTokens.filter((t) => selectedCardTokens.has(t)).length;
+    if (selectedOnPage === 0) {
+      selectAll.checked = false;
+      selectAll.indeterminate = false;
+    } else if (selectedOnPage === pageTokens.length) {
+      selectAll.checked = true;
+      selectAll.indeterminate = false;
+    } else {
+      selectAll.checked = false;
+      selectAll.indeterminate = true;
+    }
+  }
+}
 
 function normalizeStr(str) {
   return (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
@@ -66,6 +92,7 @@ function showLoggedOut() {
   stopCamera();
   session = null;
   origins = [];
+  selectedCardTokens.clear();
   $('originSearch').value = '';
   $('userForm').reset();
   $('workspace').hidden = true;
@@ -355,8 +382,23 @@ async function refreshCards() {
   currentCardsList = cards;
   const body = $('cardsBody');
   body.replaceChildren();
+
   for (const card of cards) {
     const row = node('tr');
+    const isSelected = selectedCardTokens.has(card.token);
+    if (isSelected) row.classList.add('card-row-selected');
+
+    // Coluna 1: Checkbox de seleção
+    const selectCell = node('td');
+    selectCell.style.textAlign = 'center';
+    selectCell.style.width = '36px';
+    const rowCheck = node('input');
+    rowCheck.type = 'checkbox';
+    rowCheck.className = 'card-select-check';
+    rowCheck.checked = isSelected;
+    rowCheck.title = `Selecionar ${card.number}`;
+    selectCell.append(rowCheck);
+
     const [label, css] = statusLabel(card);
     const status = node('span', `badge ${css}`, label);
     const statusCell = node('td');
@@ -365,6 +407,30 @@ async function refreshCards() {
     const actionWrap = node('div', 'button-row');
     actionWrap.style.margin = '0';
     actionWrap.style.gap = '8px';
+
+    // Checkbox dentro de Ações (solicitação direta "Em acoes, eu quero um check")
+    const actionCheckLabel = node('label', 'action-check-label');
+    const actionCheck = node('input');
+    actionCheck.type = 'checkbox';
+    actionCheck.checked = isSelected;
+    actionCheckLabel.append(actionCheck, document.createTextNode(' Sel.'));
+    actionWrap.append(actionCheckLabel);
+
+    function toggleSelect(checked) {
+      if (checked) {
+        selectedCardTokens.add(card.token);
+        row.classList.add('card-row-selected');
+      } else {
+        selectedCardTokens.delete(card.token);
+        row.classList.remove('card-row-selected');
+      }
+      rowCheck.checked = checked;
+      actionCheck.checked = checked;
+      updateBatchToolbar();
+    }
+
+    rowCheck.addEventListener('change', (e) => toggleSelect(e.target.checked));
+    actionCheck.addEventListener('change', (e) => toggleSelect(e.target.checked));
 
     const action = node('button', '', 'Ver Cartão');
     action.type = 'button';
@@ -407,10 +473,31 @@ async function refreshCards() {
       actionWrap.append(redeemBtn);
     }
 
+    // Botão individual Apagar
+    const delBtn = node('button', 'danger-btn', '🗑️ Apagar');
+    delBtn.type = 'button';
+    delBtn.style.padding = '5px 9px';
+    delBtn.style.fontSize = '12px';
+    delBtn.addEventListener('click', async () => {
+      if (!window.confirm(`Tem certeza que deseja apagar o cartão ${card.number}? Esta ação não pode ser desfeita.`)) return;
+      try {
+        delBtn.disabled = true;
+        await api(`cards/${encodeURIComponent(card.token)}`, { method: 'DELETE' });
+        selectedCardTokens.delete(card.token);
+        notice(`✓ Cartão ${card.number} apagado com sucesso!`, 'success');
+        await Promise.allSettled([refreshCards(), refreshScannedCards(), refreshReports()]);
+      } catch (err) {
+        notice(err.message, 'error');
+        delBtn.disabled = false;
+      }
+    });
+    actionWrap.append(delBtn);
+
     const actionCell = node('td');
     actionCell.append(actionWrap);
 
     row.append(
+      selectCell,
       node('td', '', card.number),
       node('td', '', card.origin_name),
       statusCell,
@@ -422,11 +509,12 @@ async function refreshCards() {
   if (!cards.length) {
     const row = node('tr');
     const cell = node('td', '', 'Nenhum cartão emitido ainda.');
-    cell.colSpan = 5;
+    cell.colSpan = 6;
     row.append(cell);
     body.append(row);
   }
   renderPager('cards', result);
+  updateBatchToolbar();
 }
 
 async function refreshScannedCards() {
@@ -1319,8 +1407,56 @@ $('exportRecentGrafica')?.addEventListener('click', () => {
   exportForPrint(tokens);
 });
 $('refreshCards').addEventListener('click', () => refreshCards().catch((error) => notice(error.message, 'error')));
-$('cardsPrev').addEventListener('click', () => { cardsPage--; refreshCards().catch((error) => notice(error.message, 'error')); });
-$('cardsNext').addEventListener('click', () => { cardsPage++; refreshCards().catch((error) => notice(error.message, 'error')); });
+$('cardsPrev').addEventListener('click', () => { cardsPage--; selectedCardTokens.clear(); refreshCards().catch((error) => notice(error.message, 'error')); });
+$('cardsNext').addEventListener('click', () => { cardsPage++; selectedCardTokens.clear(); refreshCards().catch((error) => notice(error.message, 'error')); });
+
+$('selectAllCards')?.addEventListener('change', (e) => {
+  const checked = e.target.checked;
+  for (const card of currentCardsList) {
+    if (checked) {
+      selectedCardTokens.add(card.token);
+    } else {
+      selectedCardTokens.delete(card.token);
+    }
+  }
+  document.querySelectorAll('.card-select-check, .action-check-label input').forEach((chk) => {
+    chk.checked = checked;
+  });
+  document.querySelectorAll('#cardsBody tr').forEach((row) => {
+    row.classList.toggle('card-row-selected', checked);
+  });
+  updateBatchToolbar();
+});
+
+$('clearSelectionCardsBtn')?.addEventListener('click', () => {
+  selectedCardTokens.clear();
+  document.querySelectorAll('.card-select-check, .action-check-label input').forEach((chk) => {
+    chk.checked = false;
+  });
+  document.querySelectorAll('#cardsBody tr').forEach((row) => {
+    row.classList.remove('card-row-selected');
+  });
+  updateBatchToolbar();
+});
+
+$('deleteBatchCardsBtn')?.addEventListener('click', async () => {
+  const count = selectedCardTokens.size;
+  if (!count) return;
+  if (!window.confirm(`Tem certeza que deseja apagar os ${count} cartão(ões) selecionado(s) em lote? Esta ação é definitiva.`)) return;
+  const btn = $('deleteBatchCardsBtn');
+  try {
+    btn.disabled = true;
+    const tokens = Array.from(selectedCardTokens);
+    const resp = await api('cards/delete-batch', { method: 'POST', body: { tokens } });
+    selectedCardTokens.clear();
+    notice(`✓ ${resp.deleted_count} cartão(ões) apagado(s) em lote com sucesso!`, 'success');
+    await Promise.allSettled([refreshCards(), refreshScannedCards(), refreshReports()]);
+  } catch (err) {
+    notice(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 $('refreshScannedCards')?.addEventListener('click', () => refreshScannedCards().catch((error) => notice(error.message, 'error')));
 $('scannedPrev')?.addEventListener('click', () => { scannedPage--; refreshScannedCards().catch((error) => notice(error.message, 'error')); });

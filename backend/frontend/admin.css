@@ -64,3 +64,48 @@ a{color:#ff9d77}
   .kpi-value{color:#000!important}
 }
 
+.danger-btn {
+  background: #3d141e !important;
+  color: #ff8599 !important;
+  border: 1px solid #ff4b6e66 !important;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.danger-btn:hover {
+  background: #6e1a2c !important;
+  color: #ffffff !important;
+  border-color: #ff4b6e !important;
+}
+.card-row-selected {
+  background: rgba(255, 75, 110, 0.14) !important;
+}
+.action-check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  color: #e8e3eb;
+  padding: 4px 8px;
+  background: #1c1825;
+  border: 1px solid #443c56;
+  border-radius: 6px;
+  user-select: none;
+  margin: 0;
+}
+.action-check-label:hover {
+  border-color: #ff7b4b;
+  background: #252033;
+}
+.action-check-label input[type="checkbox"],
+.card-select-check {
+  width: 15px;
+  height: 15px;
+  min-height: unset;
+  accent-color: #ee6f64;
+  margin: 0;
+  cursor: pointer;
+}
+

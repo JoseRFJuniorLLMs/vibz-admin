@@ -38,7 +38,7 @@ class ApiTests(unittest.TestCase):
         admin_page = self.client.get("/admin/")
         self.assertEqual(admin_page.status_code, 200)
         self.assertEqual(admin_page.headers["cache-control"], "no-store")
-        self.assertIn("admin.js?v=20261002-v6-fixes", admin_page.text)
+        self.assertIn("admin.js?v=20261002-v7-del-cards", admin_page.text)
         self.assertEqual(self.client.get("/static/admin.js").headers["cache-control"], "no-store")
 
     def test_login_csrf_roles_and_redeem(self):
@@ -213,6 +213,39 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(rep_after.json()["summary"]["total_admissions"], 1)
         self.assertEqual(rep_after.json()["summary"]["total_unused"], 4)
 
+    def test_delete_card_and_batch_delete(self):
+        csrf = self.login()
+        origin = self.store.create_origin("Bar da Praia", "Restaurante", "admin")
+        batch = self.store.issue(origin["id"], 4, None, "admin")
+        self.assertEqual(len(batch), 4)
+
+        t1, t2, t3, t4 = [c["token"] for c in batch]
+        n1 = batch[0]["number"]
+
+        # Deletar sem CSRF falha
+        self.assertEqual(self.client.delete(f"/api/cards/{t1}").status_code, 403)
+
+        # Deletar cartão individual
+        del_single = self.client.delete(f"/api/cards/{t1}", headers={"X-CSRF-Token": csrf})
+        self.assertEqual(del_single.status_code, 200, del_single.text)
+        self.assertEqual(del_single.json()["number"], n1)
+        self.assertEqual(del_single.json()["token"], t1)
+
+        # Tentar buscar cartão deletado dá 404
+        self.assertEqual(self.client.get(f"/api/cards/{t1}/qr.svg").status_code, 404)
+
+        # Deletar em lote (t2 e t3)
+        del_batch = self.client.post("/api/cards/delete-batch", json={"tokens": [t2, t3]}, headers={"X-CSRF-Token": csrf})
+        self.assertEqual(del_batch.status_code, 200, del_batch.text)
+        self.assertEqual(del_batch.json()["deleted_count"], 2)
+
+        # Verificar que apenas t4 sobrou daquele lote
+        cards_res = self.client.get(f"/api/cards?origin_id={origin['id']}")
+        self.assertEqual(cards_res.status_code, 200)
+        self.assertEqual(cards_res.json()["total"], 1)
+        self.assertEqual(cards_res.json()["items"][0]["token"], t4)
+
 
 if __name__ == "__main__":
     unittest.main()
+

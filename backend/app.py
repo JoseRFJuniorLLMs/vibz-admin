@@ -81,6 +81,10 @@ class ExportInput(BaseModel):
     tokens: list[str] = Field(min_length=1, max_length=100)
 
 
+class DeleteBatchInput(BaseModel):
+    tokens: list[str] = Field(min_length=1, max_length=500)
+
+
 Category = Literal["hospedagem", "gastronomia", "praia"]
 PartnerStatus = Literal["nao_contatado", "contatado", "interessado", "parceiro"]
 Priority = Literal["baixa", "media", "alta"]
@@ -340,6 +344,16 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
     @app.post("/api/cards/{token}/redeem")
     def redeem(token: str, data: RedeemInput, staff: Actor = Depends(csrf_actor)):
         return card_response(store_call(store.redeem, token, data.wristband, str(staff.id)))
+
+    @app.delete("/api/cards/{token}")
+    def delete_single_card(token: str, _staff: Actor = Depends(csrf_actor)):
+        deleted = store_call(store.delete_card, token)
+        return {"ok": True, "number": deleted["number"], "token": deleted["token"]}
+
+    @app.post("/api/cards/delete-batch")
+    def delete_cards_batch(data: DeleteBatchInput, _staff: Actor = Depends(csrf_actor)):
+        count = store_call(store.delete_cards_batch, data.tokens)
+        return {"ok": True, "deleted_count": count}
 
     @app.get("/api/cards/{token}/qr.svg")
     def qr_svg(token: str, _staff: Actor = Depends(actor)):

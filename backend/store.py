@@ -369,6 +369,29 @@ class Store:
         finally:
             db.close()
 
+    def delete_card(self, token: str) -> dict:
+        if not TOKEN_RE.fullmatch(token):
+            raise StoreError("QR inválido")
+        with closing(self._connect()) as db:
+            row = db.execute("SELECT id, token FROM cards WHERE token=?", (token,)).fetchone()
+            if not row:
+                raise StoreError("Cartão não encontrado", 404)
+            card_info = {"number": card_number(row["id"]), "token": row["token"]}
+            db.execute("DELETE FROM cards WHERE token=?", (token,))
+            db.commit()
+            return card_info
+
+    def delete_cards_batch(self, tokens: list[str]) -> int:
+        valid_tokens = [t.strip() for t in tokens if TOKEN_RE.fullmatch(t.strip())]
+        if not valid_tokens:
+            raise StoreError("Nenhum cartão válido selecionado para exclusão", 400)
+        with closing(self._connect()) as db:
+            placeholders = ",".join("?" for _ in valid_tokens)
+            cursor = db.execute(f"DELETE FROM cards WHERE token IN ({placeholders})", tuple(valid_tokens))
+            deleted_count = cursor.rowcount
+            db.commit()
+            return deleted_count
+
     def create_user(self, username: str, password_hash: str, role: str) -> dict:
         username = username.strip().lower()
         if not re.fullmatch(r"[a-z0-9_.-]{3,40}", username):
