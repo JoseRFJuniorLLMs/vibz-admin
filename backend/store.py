@@ -477,25 +477,49 @@ class Store:
     def delete_card(self, token: str) -> dict:
         if not TOKEN_RE.fullmatch(token):
             raise StoreError("QR inválido")
-        with closing(self._connect()) as db:
+        db = self._connect()
+        try:
             row = db.execute("SELECT id, token FROM cards WHERE token=?", (token,)).fetchone()
             if not row:
                 raise StoreError("Cartão não encontrado", 404)
-            card_info = {"number": card_number(row["id"]), "token": row["token"]}
-            db.execute("DELETE FROM cards WHERE token=?", (token,))
+            card_id = row["id"]
+            has_orders = db.execute("SELECT COUNT(*) FROM bar_orders WHERE card_id=?", (card_id,)).fetchone()[0]
+            if has_orders > 0:
+                raise StoreError("Este cartão possui consumos registrados no bar e não pode ser excluído.", 400)
+            card_info = {"number": card_number(card_id), "token": row["token"]}
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("DELETE FROM cards WHERE id=?", (card_id,))
             db.commit()
             return card_info
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def delete_cards_batch(self, tokens: list[str]) -> int:
         valid_tokens = [t.strip() for t in tokens if TOKEN_RE.fullmatch(t.strip())]
         if not valid_tokens:
             raise StoreError("Nenhum cartão válido selecionado para exclusão", 400)
-        with closing(self._connect()) as db:
+        db = self._connect()
+        try:
             placeholders = ",".join("?" for _ in valid_tokens)
+            has_orders = db.execute(
+                f"SELECT COUNT(*) FROM bar_orders bo JOIN cards c ON c.id=bo.card_id WHERE c.token IN ({placeholders})",
+                tuple(valid_tokens),
+            ).fetchone()[0]
+            if has_orders > 0:
+                raise StoreError("Alguns dos cartões selecionados possuem consumos registrados no bar e não podem ser excluídos.", 400)
+            db.execute("BEGIN IMMEDIATE")
             cursor = db.execute(f"DELETE FROM cards WHERE token IN ({placeholders})", tuple(valid_tokens))
             deleted_count = cursor.rowcount
             db.commit()
             return deleted_count
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def create_user(self, username: str, password_hash: str, role: str) -> dict:
         username = username.strip().lower()
@@ -583,18 +607,24 @@ class Store:
 
             if sets:
                 params.append(user_id)
-                db.execute(f"UPDATE users SET {','.join(sets)} WHERE id=?", tuple(params))
-                if "password_hash" in changes or changes.get("active") == 0:
-                    db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
-                db.commit()
+                db.execute("BEGIN IMMEDIATE")
+                try:
+                    db.execute(f"UPDATE users SET {','.join(sets)} WHERE id=?", tuple(params))
+                    if "password_hash" in changes or changes.get("active") == 0:
+                        db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                    raise
 
             updated = db.execute("SELECT id, username, role, active, created_at FROM users WHERE id=?", (user_id,)).fetchone()
             return dict(updated)
 
     def delete_user(self, user_id: int, operator_id: int) -> dict:
-        if user_id == operator_id:
+        if int(user_id) == int(operator_id):
             raise StoreError("Você não pode excluir sua própria conta")
-        with closing(self._connect()) as db:
+        db = self._connect()
+        try:
             row = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
             if not row:
                 raise StoreError("Usuário não encontrado", 404)
@@ -606,10 +636,16 @@ class Store:
                 if admin_count == 0:
                     raise StoreError("Não é possível excluir o único administrador ativo")
 
+            db.execute("BEGIN IMMEDIATE")
             db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM users WHERE id=?", (user_id,))
             db.commit()
             return {"id": user_id, "username": user["username"]}
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def create_session(self, user_id: int, token_hash: str, csrf_token: str, lifetime: int) -> None:
         now = int(time.time())
@@ -657,6 +693,7 @@ class Store:
             db.execute("DELETE FROM login_limits WHERE key=?", (key,))
 
     def report_admissions(self, days: int = 30, origin_id: str | None = None) -> dict:
+        today_str = local_today().isoformat()
         with closing(self._connect()) as db:
             db.row_factory = sqlite3.Row
             origin_clause = "AND origin_id = ?" if origin_id else ""
@@ -667,13 +704,13 @@ class Store:
                     COUNT(*) as total_issued,
                     SUM(CASE WHEN status = 'redeemed' THEN 1 ELSE 0 END) as total_redeemed,
                     SUM(CASE WHEN status = 'issued' THEN 1 ELSE 0 END) as total_unused,
-                    SUM(CASE WHEN substr(issued_at, 1, 10) = date('now') THEN 1 ELSE 0 END) as today_issued,
-                    SUM(CASE WHEN substr(redeemed_at, 1, 10) = date('now') THEN 1 ELSE 0 END) as today_redeemed,
-                    SUM(CASE WHEN substr(issued_at, 1, 10) = date('now') AND status = 'issued' THEN 1 ELSE 0 END) as today_unused
+                    SUM(CASE WHEN date(issued_at, '-3 hours') = ? THEN 1 ELSE 0 END) as today_issued,
+                    SUM(CASE WHEN date(redeemed_at, '-3 hours') = ? THEN 1 ELSE 0 END) as today_redeemed,
+                    SUM(CASE WHEN date(issued_at, '-3 hours') = ? AND status = 'issued' THEN 1 ELSE 0 END) as today_unused
                 FROM cards
                 WHERE 1=1 {origin_clause}
             """
-            s_row = db.execute(summary_query, origin_params).fetchone()
+            s_row = db.execute(summary_query, (today_str, today_str, today_str, *origin_params)).fetchone()
 
             total_issued = (s_row["total_issued"] if s_row else 0) or 0
             total_redeemed = (s_row["total_redeemed"] if s_row else 0) or 0
@@ -689,30 +726,30 @@ class Store:
 
             daily_issued_query = f"""
                 SELECT
-                    substr(issued_at, 1, 10) as day,
+                    date(issued_at, '-3 hours') as day,
                     COUNT(*) as issued,
                     SUM(CASE WHEN status = 'redeemed' THEN 1 ELSE 0 END) as issued_used,
                     SUM(CASE WHEN status = 'issued' THEN 1 ELSE 0 END) as issued_unused
                 FROM cards
-                WHERE substr(issued_at, 1, 10) >= date('now', ?) {origin_clause}
-                GROUP BY substr(issued_at, 1, 10)
+                WHERE date(issued_at, '-3 hours') >= date(?, ?) {origin_clause}
+                GROUP BY date(issued_at, '-3 hours')
             """
             daily_issued = {
                 r["day"]: dict(r)
-                for r in db.execute(daily_issued_query, (days_param, *origin_params)).fetchall()
+                for r in db.execute(daily_issued_query, (today_str, days_param, *origin_params)).fetchall()
             }
 
             daily_redeemed_query = f"""
                 SELECT
-                    substr(redeemed_at, 1, 10) as day,
+                    date(redeemed_at, '-3 hours') as day,
                     COUNT(*) as admissions
                 FROM cards
-                WHERE redeemed_at IS NOT NULL AND substr(redeemed_at, 1, 10) >= date('now', ?) {origin_clause}
-                GROUP BY substr(redeemed_at, 1, 10)
+                WHERE redeemed_at IS NOT NULL AND date(redeemed_at, '-3 hours') >= date(?, ?) {origin_clause}
+                GROUP BY date(redeemed_at, '-3 hours')
             """
             daily_redeemed = {
                 r["day"]: dict(r)
-                for r in db.execute(daily_redeemed_query, (days_param, *origin_params)).fetchall()
+                for r in db.execute(daily_redeemed_query, (today_str, days_param, *origin_params)).fetchall()
             }
 
             all_days = sorted(set(list(daily_issued.keys()) + list(daily_redeemed.keys())), reverse=True)
@@ -760,15 +797,15 @@ class Store:
                 })
 
             hourly_query = f"""
-                SELECT CAST(strftime('%H', redeemed_at) AS INTEGER) as hour, COUNT(*) as count
+                SELECT CAST(strftime('%H', datetime(redeemed_at, '-3 hours')) AS INTEGER) as hour, COUNT(*) as count
                 FROM cards
-                WHERE redeemed_at IS NOT NULL AND substr(redeemed_at, 1, 10) = date('now') {origin_clause}
+                WHERE redeemed_at IS NOT NULL AND date(redeemed_at, '-3 hours') = ? {origin_clause}
                 GROUP BY hour
                 ORDER BY hour
             """
             hourly_counts = {
                 r["hour"]: r["count"]
-                for r in db.execute(hourly_query, origin_params).fetchall()
+                for r in db.execute(hourly_query, (today_str, *origin_params)).fetchall()
             }
             hourly_stats = [{"hour": h, "count": hourly_counts.get(h, 0)} for h in range(24)]
 
@@ -828,7 +865,9 @@ class Store:
         if dosage not in {"dose", "garrafa", "lata", "unidade"}:
             raise StoreError("Dosagem deve ser 'dose', 'garrafa', 'lata' ou 'unidade'")
         now = utc_now()
-        with closing(self._connect()) as db:
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
             cur = db.execute(
                 "INSERT INTO drinks(name, price, cost_price, dosage, stock_quantity, min_stock, active, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
                 (name, price, cost_price, dosage, initial_stock, min_stock, now),
@@ -853,6 +892,11 @@ class Store:
                 "active": 1,
                 "created_at": now
             }
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def update_drink(self, drink_id: int, changes: dict, operator_id: str = "", operator_username: str = "") -> dict:
         valid_fields = {"name", "price", "cost_price", "dosage", "stock_quantity", "min_stock", "active"}
@@ -910,17 +954,22 @@ class Store:
                 raise StoreError("Nenhum dado informado para alteração")
 
             params.append(drink_id)
-            cur = db.execute(f"UPDATE drinks SET {', '.join(set_parts)} WHERE id=?", tuple(params))
-            if stock_change:
-                prev_st, new_st = stock_change
-                delta = new_st - prev_st
-                db.execute(
-                    """INSERT INTO stock_movements(
-                        drink_id, movement_type, quantity, previous_stock, new_stock, unit_cost, reason, operator_id, operator_username, created_at
-                    ) VALUES (?, 'ajuste', ?, ?, ?, ?, 'Ajuste manual no cadastro', ?, ?, ?)""",
-                    (drink_id, delta, prev_st, new_st, current_drink.get("cost_price", 0.0), operator_id, operator_username, utc_now()),
-                )
-            db.commit()
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                cur = db.execute(f"UPDATE drinks SET {', '.join(set_parts)} WHERE id=?", tuple(params))
+                if stock_change:
+                    prev_st, new_st = stock_change
+                    delta = new_st - prev_st
+                    db.execute(
+                        """INSERT INTO stock_movements(
+                            drink_id, movement_type, quantity, previous_stock, new_stock, unit_cost, reason, operator_id, operator_username, created_at
+                        ) VALUES (?, 'ajuste', ?, ?, ?, ?, 'Ajuste manual no cadastro', ?, ?, ?)""",
+                        (drink_id, delta, prev_st, new_st, current_drink.get("cost_price", 0.0), operator_id, operator_username, utc_now()),
+                    )
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
             row = db.execute("SELECT * FROM drinks WHERE id=?", (drink_id,)).fetchone()
             return dict(row)
 
@@ -945,7 +994,9 @@ class Store:
             unit_cost = 0.0
         reason = (reason or "").strip() or "Entrada de estoque"
         now = utc_now()
-        with closing(self._connect()) as db:
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
             drink = db.execute("SELECT * FROM drinks WHERE id=?", (drink_id,)).fetchone()
             if not drink:
                 raise StoreError("Bebida não encontrada", 404)
@@ -976,13 +1027,20 @@ class Store:
                 "reason": reason,
                 "created_at": now
             }
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def adjust_stock(self, drink_id: int, new_quantity: int, reason: str = "", operator_id: str = "", operator_username: str = "") -> dict:
         if new_quantity < 0:
             raise StoreError("A quantidade não pode ser negativa")
         reason = (reason or "").strip() or "Ajuste de inventário"
         now = utc_now()
-        with closing(self._connect()) as db:
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
             drink = db.execute("SELECT * FROM drinks WHERE id=?", (drink_id,)).fetchone()
             if not drink:
                 raise StoreError("Bebida não encontrada", 404)
@@ -1008,6 +1066,11 @@ class Store:
                 "reason": reason,
                 "created_at": now
             }
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def stock_overview_report(self) -> dict:
         with closing(self._connect()) as db:

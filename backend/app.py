@@ -410,12 +410,12 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
         return card_response(store_call(store.redeem, token, data.wristband, str(staff.id)))
 
     @app.delete("/api/cards/{token}")
-    def delete_single_card(token: str, _staff: Actor = Depends(csrf_actor)):
+    def delete_single_card(token: str, _staff: Actor = Depends(admin)):
         deleted = store_call(store.delete_card, token)
         return {"ok": True, "number": deleted["number"], "token": deleted["token"]}
 
     @app.post("/api/cards/delete-batch")
-    def delete_cards_batch(data: DeleteBatchInput, _staff: Actor = Depends(csrf_actor)):
+    def delete_cards_batch(data: DeleteBatchInput, _staff: Actor = Depends(admin)):
         count = store_call(store.delete_cards_batch, data.tokens)
         return {"ok": True, "deleted_count": count}
 
@@ -434,7 +434,7 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
         )
 
     @app.post("/api/cards/export.zip")
-    def export_zip(data: ExportInput, _staff: Actor = Depends(actor)):
+    def export_zip(data: ExportInput, _staff: Actor = Depends(admin)):
         """Gera ZIP com imagens PNG completas de cada cartão, PDF unificado, SVG e CSV."""
         valid_tokens = [t for t in data.tokens if TOKEN_RE.fullmatch(t)]
         if not valid_tokens:
@@ -541,7 +541,7 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
         )
 
     @app.get("/api/reports/admissions")
-    def get_admissions_report(days: int = 30, origin_id: str | None = None, _staff: Actor = Depends(actor)):
+    def get_admissions_report(days: int = 30, origin_id: str | None = None, _staff: Actor = Depends(admin_read)):
         return store_call(
             store.report_admissions,
             days=days,

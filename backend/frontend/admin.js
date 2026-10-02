@@ -90,9 +90,13 @@ async function api(path, {method = 'GET', body} = {}) {
 
 function showLoggedOut() {
   stopCamera();
+  stopBarCamera();
   session = null;
   origins = [];
   selectedCardTokens.clear();
+  currentBarCart = [];
+  currentBarCard = null;
+  if ($('barCardStatusBox')) $('barCardStatusBox').style.display = 'none';
   $('originSearch').value = '';
   $('userForm').reset();
   $('workspace').hidden = true;
@@ -2445,10 +2449,15 @@ async function findBarCard(val) {
     currentBarCard = res.card;
     if ($('barCardInput')) $('barCardInput').value = res.card.number;
     $('barCardStatusBox').style.display = 'block';
-    $('barCardNumber').textContent = `${res.card.number}`;
-    $('barCardOrigin').textContent = `Origem: ${res.card.origin_name || 'VIBZ'} · Status: ${res.card.status === 'redeemed' ? 'Entrada confirmada' : 'Emitido'}`;
+    const expText = res.card.expired ? ' · ⚠️ VENCIDO' : '';
+    $('barCardNumber').textContent = `${res.card.number}${res.card.expired ? ' (Vencido)' : ''}`;
+    $('barCardOrigin').textContent = `Origem: ${res.card.origin_name || 'VIBZ'} · Status: ${res.card.status === 'redeemed' ? 'Entrada confirmada' : 'Emitido'}${expText}`;
     $('barCardTotalSpent').textContent = `Total já consumido no bar: ${formatMoney(res.total_spent)}`;
-    notice(`✓ Cartão ${res.card.number} identificado!`, 'success');
+    if (res.card.expired) {
+      notice(`⚠️ Cartão ${res.card.number} identificado, porém está VENCIDO!`, 'error');
+    } else {
+      notice(`✓ Cartão ${res.card.number} identificado!`, 'success');
+    }
   } catch (err) {
     currentBarCard = null;
     $('barCardStatusBox').style.display = 'none';

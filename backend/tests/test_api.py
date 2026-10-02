@@ -38,7 +38,7 @@ class ApiTests(unittest.TestCase):
         admin_page = self.client.get("/admin/")
         self.assertEqual(admin_page.status_code, 200)
         self.assertEqual(admin_page.headers["cache-control"], "no-store")
-        self.assertIn("admin.js?v=20261002-v14-menu-stock", admin_page.text)
+        self.assertIn("admin.js?v=20261002-v15-audit-hardened", admin_page.text)
         self.assertEqual(self.client.get("/static/admin.js").headers["cache-control"], "no-store")
 
     def test_login_csrf_roles_and_redeem(self):
@@ -262,6 +262,14 @@ class ApiTests(unittest.TestCase):
         # Deletar sem CSRF falha
         self.assertEqual(self.client.delete(f"/api/cards/{t1}").status_code, 403)
 
+        # Operador não pode deletar cartão (403)
+        op_csrf = self.login("portaria", "Another-secret-456")
+        self.assertEqual(self.client.delete(f"/api/cards/{t1}", headers={"X-CSRF-Token": op_csrf}).status_code, 403)
+        self.assertEqual(self.client.post("/api/cards/delete-batch", json={"tokens": [t1]}, headers={"X-CSRF-Token": op_csrf}).status_code, 403)
+
+        # Login como admin
+        csrf = self.login()
+
         # Deletar cartão individual
         del_single = self.client.delete(f"/api/cards/{t1}", headers={"X-CSRF-Token": csrf})
         self.assertEqual(del_single.status_code, 200, del_single.text)
@@ -276,7 +284,19 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(del_batch.status_code, 200, del_batch.text)
         self.assertEqual(del_batch.json()["deleted_count"], 2)
 
-        # Verificar que apenas t4 sobrou daquele lote
+        # Lançar pedido de bar no cartão t4
+        drinks = self.client.get("/api/bar/drinks").json()
+        self.client.post(
+            "/api/bar/order",
+            json={"card": t4, "items": [{"drink_id": drinks[0]["id"], "quantity": 1}]},
+            headers={"X-CSRF-Token": csrf}
+        )
+        # Cartão t4 com consumo no bar não pode ser deletado (400)
+        del_t4 = self.client.delete(f"/api/cards/{t4}", headers={"X-CSRF-Token": csrf})
+        self.assertEqual(del_t4.status_code, 400)
+        self.assertIn("consumo", del_t4.json()["detail"])
+
+        # Verificar que t4 continua no banco
         cards_res = self.client.get(f"/api/cards?origin_id={origin['id']}")
         self.assertEqual(cards_res.status_code, 200)
         self.assertEqual(cards_res.json()["total"], 1)
