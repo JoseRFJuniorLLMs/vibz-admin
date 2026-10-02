@@ -55,11 +55,11 @@ class LoginInput(BaseModel):
 class NewUserInput(BaseModel):
     username: str = Field(min_length=3, max_length=40)
     password: str = Field(min_length=12, max_length=256)
-    role: Literal["admin", "operator", "portaria", "bar"]
+    role: Literal["admin", "operator", "portaria", "bar", "venda_cartao"]
 
 
 class UserUpdateInput(BaseModel):
-    role: Literal["admin", "operator", "portaria", "bar"] | None = None
+    role: Literal["admin", "operator", "portaria", "bar", "venda_cartao"] | None = None
     password: str | None = Field(default=None, min_length=12, max_length=256)
     active: bool | None = None
 
@@ -89,6 +89,12 @@ class ExportInput(BaseModel):
 
 class DeleteBatchInput(BaseModel):
     tokens: list[str] = Field(min_length=1, max_length=500)
+
+
+class CardUpdateInput(BaseModel):
+    valid_until: str | None = None
+    active: bool | None = None
+    status: str | None = None
 
 
 Category = Literal["hospedagem", "gastronomia", "praia"]
@@ -129,7 +135,11 @@ class DrinkUpdate(BaseModel):
 
 
 class StockEntryInput(BaseModel):
-    drink_id: int
+    drink_id: int | None = None
+    new_drink_name: str | None = Field(default=None, max_length=120)
+    new_drink_price: float | None = Field(default=None, gt=0)
+    new_drink_dosage: str | None = Field(default="dose", pattern=r"^(dose|garrafa|lata|unidade)$")
+    new_drink_min_stock: int | None = Field(default=10, ge=0)
     quantity: int = Field(ge=1, le=100000)
     unit_cost: float = Field(default=0.0, ge=0)
     reason: str = Field(default="", max_length=200)
@@ -200,6 +210,11 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
     def admin(staff: Actor = Depends(csrf_actor)) -> Actor:
         if staff.role != "admin":
             raise HTTPException(403, "Ação permitida apenas ao administrador")
+        return staff
+
+    def can_issue_cards(staff: Actor = Depends(csrf_actor)) -> Actor:
+        if staff.role not in {"admin", "venda_cartao"}:
+            raise HTTPException(403, "Ação permitida apenas ao administrador ou perfil venda de cartão")
         return staff
 
     def card_response(card: dict) -> dict:
@@ -387,7 +402,7 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
         return store_call(store.update_partner, identifier, changes)
 
     @app.post("/api/cards", status_code=201)
-    def issue_cards(data: IssueInput, staff: Actor = Depends(admin)):
+    def issue_cards(data: IssueInput, staff: Actor = Depends(can_issue_cards)):
         issued = store_call(store.issue, data.origin_id, data.count, data.valid_until, str(staff.id))
         res = []
         for card in issued:
@@ -408,6 +423,11 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
     @app.post("/api/cards/{token}/redeem")
     def redeem(token: str, data: RedeemInput, staff: Actor = Depends(csrf_actor)):
         return card_response(store_call(store.redeem, token, data.wristband, str(staff.id)))
+
+    @app.patch("/api/cards/{token}")
+    def update_card(token: str, data: CardUpdateInput, _staff: Actor = Depends(admin)):
+        changes = data.model_dump(exclude_unset=True)
+        return card_response(store_call(store.update_card, token, changes))
 
     @app.delete("/api/cards/{token}")
     def delete_single_card(token: str, _staff: Actor = Depends(admin)):
@@ -434,7 +454,7 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
         )
 
     @app.post("/api/cards/export.zip")
-    def export_zip(data: ExportInput, _staff: Actor = Depends(admin)):
+    def export_zip(data: ExportInput, _staff: Actor = Depends(can_issue_cards)):
         """Gera ZIP com imagens PNG completas de cada cartão, PDF unificado, SVG e CSV."""
         valid_tokens = [t for t in data.tokens if TOKEN_RE.fullmatch(t)]
         if not valid_tokens:
@@ -601,15 +621,38 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
 
     @app.post("/api/stock/entry", status_code=201)
     def add_stock_entry(data: StockEntryInput, staff: Actor = Depends(admin)):
-        return store_call(
+        drink_id = data.drink_id
+        is_new = False
+        if not drink_id:
+            if not data.new_drink_name or not data.new_drink_price:
+                raise HTTPException(400, "Selecione uma bebida cadastrada ou preencha o nome e preço da nova bebida.")
+            new_drink = store_call(
+                store.create_drink,
+                name=data.new_drink_name,
+                price=data.new_drink_price,
+                dosage=data.new_drink_dosage or "dose",
+                cost_price=data.unit_cost,
+                initial_stock=0,
+                min_stock=data.new_drink_min_stock if data.new_drink_min_stock is not None else 10,
+                operator_id=str(staff.id),
+                operator_username=staff.username,
+            )
+            drink_id = new_drink["id"]
+            is_new = True
+
+        reason = data.reason or ("Cadastro e entrada inicial de estoque" if is_new else "Entrada de estoque")
+        result = store_call(
             store.add_stock_entry,
-            data.drink_id,
+            drink_id,
             data.quantity,
             data.unit_cost,
-            data.reason,
+            reason,
             str(staff.id),
             staff.username,
         )
+        if is_new:
+            result["created_new_drink"] = True
+        return result
 
     @app.post("/api/stock/adjust")
     def adjust_stock(data: StockAdjustInput, staff: Actor = Depends(admin)):

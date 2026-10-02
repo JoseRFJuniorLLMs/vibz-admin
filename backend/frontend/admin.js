@@ -148,20 +148,27 @@ async function showLoggedIn(data) {
   const username = (data.username || '').toLowerCase();
   const isAdmin = role === 'admin';
   const isBar = !isAdmin && (role === 'bar' || username === 'bar');
-  const isPortaria = !isAdmin && !isBar;
+  const isVendaCartao = !isAdmin && !isBar && (role === 'venda_cartao' || username === 'venda_cartao');
+  const isPortaria = !isAdmin && !isBar && !isVendaCartao;
 
   let roleLabel = 'administrador';
   if (isBar) roleLabel = 'bar';
+  else if (isVendaCartao) roleLabel = 'venda de cartão';
   else if (isPortaria) roleLabel = 'portaria';
 
   $('accountName').textContent = `${data.username} · ${roleLabel}`;
 
-  // 1 - Usuário portaria só pode ler qrcode da portaria, todos os outros menus não aparecem
-  // 2 - Usuário bar só pode ler qrcode de bar, todos os outros menus não aparecem
+  // Controle de menus por perfil:
+  // - Portaria: apenas Ler QR da portaria
+  // - Bar: apenas Ler QR do bar e lançar consumo
+  // - Venda de Cartão: pode ter acesso ao menu gerar cartão e ler qrcode
+  // - Administrador: acesso irrestrito
   document.querySelectorAll('.tab').forEach((tab) => {
     const tabName = tab.dataset.tab;
     if (isAdmin) {
       tab.hidden = false;
+    } else if (isVendaCartao) {
+      tab.hidden = !(tabName === 'issue' || tabName === 'scan');
     } else if (isPortaria) {
       tab.hidden = (tabName !== 'scan');
     } else if (isBar) {
@@ -171,11 +178,15 @@ async function showLoggedIn(data) {
 
   document.querySelectorAll('form.admin-only, .admin-only').forEach((element) => {
     if (!element.classList.contains('tab')) {
-      element.hidden = !isAdmin;
+      if (element.id === 'issueForm') {
+        element.hidden = !(isAdmin || isVendaCartao);
+      } else {
+        element.hidden = !isAdmin;
+      }
     }
   });
 
-  $('issueOperatorNote').hidden = isAdmin;
+  $('issueOperatorNote').hidden = (isAdmin || isVendaCartao);
 
   // Sub-abas do Bar: se não for admin, oculta gestão administrativa de cardápio, estoque e clientes
   if ($('barSubNavMenu')) $('barSubNavMenu').hidden = !isAdmin;
@@ -185,6 +196,9 @@ async function showLoggedIn(data) {
   if (isBar) {
     switchTab('bar');
     initBarModule().catch((error) => notice(error.message, 'error'));
+  } else if (isVendaCartao) {
+    switchTab('issue');
+    refreshOrigins().catch((error) => notice(error.message, 'error'));
   } else {
     switchTab('scan');
     if (isAdmin) {
@@ -201,10 +215,12 @@ function switchTab(name) {
   const username = (session?.username || '').toLowerCase();
   const isAdmin = role === 'admin';
   const isBar = !isAdmin && (role === 'bar' || username === 'bar');
-  const isPortaria = !isAdmin && !isBar;
+  const isVendaCartao = !isAdmin && !isBar && (role === 'venda_cartao' || username === 'venda_cartao');
+  const isPortaria = !isAdmin && !isBar && !isVendaCartao;
 
   if (isPortaria && name !== 'scan') name = 'scan';
   if (isBar && name !== 'bar') name = 'bar';
+  if (isVendaCartao && name !== 'issue' && name !== 'scan') name = 'issue';
 
   if (scannedInterval) {
     clearInterval(scannedInterval);
@@ -289,6 +305,7 @@ async function refreshUsers() {
     let roleTxt = 'Portaria';
     if (user.role === 'admin') roleTxt = 'Administrador';
     else if (user.role === 'bar') roleTxt = 'Bar';
+    else if (user.role === 'venda_cartao') roleTxt = 'Venda de Cartão';
 
     const actionsCell = node('td');
     actionsCell.style.display = 'flex';
@@ -535,6 +552,7 @@ function formatDate(value) {
 }
 
 function statusLabel(card) {
+  if (card.active === false || card.active === 0) return ['Inativado', 'expired'];
   if (card.status === 'redeemed') return ['Utilizado', 'used'];
   if (card.expired) return ['Vencido', 'expired'];
   return ['Válido', 'valid'];
@@ -620,7 +638,7 @@ async function refreshCards() {
 
     actionWrap.append(action, dlBtn);
 
-    if (card.status === 'issued' && !card.expired) {
+    if (card.status === 'issued' && !card.expired && card.active !== false && card.active !== 0) {
       const redeemBtn = node('button', 'primary', 'Liberar Entrada');
       redeemBtn.type = 'button';
       redeemBtn.style.padding = '5px 8px';
@@ -639,6 +657,21 @@ async function refreshCards() {
         }
       });
       actionWrap.append(redeemBtn);
+    }
+
+    const isUserAdmin = session?.role === 'admin';
+    if (isUserAdmin) {
+      const editCardBtn = node('button', '', '✏️ Editar');
+      editCardBtn.type = 'button';
+      editCardBtn.style.padding = '5px 9px';
+      editCardBtn.style.fontSize = '12px';
+      editCardBtn.style.background = '#1e1c2e';
+      editCardBtn.style.borderColor = '#6b5a8e';
+      editCardBtn.style.color = '#e2dcfa';
+      editCardBtn.style.fontWeight = '700';
+      editCardBtn.title = `Editar validade e ativação do cartão ${card.number}`;
+      editCardBtn.addEventListener('click', () => openCardEdit(card));
+      actionWrap.append(editCardBtn);
     }
 
     // Botão Consumo
@@ -915,7 +948,8 @@ function renderCard(card) {
     details.append(cell);
   }
   panel.append(badge, node('h3', '', card.number), details);
-  if (card.status === 'issued' && !card.expired) {
+  const isCardActive = card.active !== false && card.active !== 0;
+  if (card.status === 'issued' && !card.expired && isCardActive) {
     const form = node('form', 'redeem-form');
     const label = node('label', '', 'Número da pulseira (opcional)');
     const input = node('input');
@@ -943,9 +977,28 @@ function renderCard(card) {
     });
     panel.append(form);
   } else {
-    panel.append(node('p', 'message error', card.status === 'redeemed'
-      ? 'Este QR já foi utilizado. Não libere uma segunda entrada.'
-      : 'Este cartão venceu. Não libere a entrada.'));
+    let errReason = 'Este cartão venceu. Não libere a entrada.';
+    if (!isCardActive) {
+      errReason = 'Este cartão está INATIVADO pelo administrador. Não libere a entrada.';
+    } else if (card.status === 'redeemed') {
+      errReason = 'Este QR já foi utilizado. Não libere uma segunda entrada.';
+    }
+    panel.append(node('p', 'message error', errReason));
+  }
+
+  if (session?.role === 'admin') {
+    const editBtn = node('button', '', '✏️ Editar / Reativar Cartão');
+    editBtn.type = 'button';
+    editBtn.style.padding = '8px 14px';
+    editBtn.style.fontSize = '13px';
+    editBtn.style.marginTop = '12px';
+    editBtn.style.background = '#281a33';
+    editBtn.style.borderColor = '#bd468a';
+    editBtn.style.color = '#ff9e73';
+    editBtn.style.fontWeight = '700';
+    editBtn.title = `Editar validade e ativação do cartão ${card.number}`;
+    editBtn.addEventListener('click', () => openCardEdit(card));
+    panel.append(editBtn);
   }
   target.append(panel);
 }
@@ -981,7 +1034,7 @@ async function lookupQr(value) {
   const card = await api('lookup', {method: 'POST', body: {qr: value}});
   renderCard(card);
   stopCamera();
-  const valid = card.status === 'issued' && !card.expired;
+  const valid = card.status === 'issued' && !card.expired && card.active !== false && card.active !== 0;
   if (valid) playBling();
   notice(`${card.number} identificado: ${card.origin_name}.`, valid ? 'success' : 'error');
 }
@@ -2017,6 +2070,75 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+function openCardEdit(card) {
+  if (!card) return;
+  const modal = $('cardEditModal');
+  if (!modal) return;
+  $('editCardToken').value = card.token || '';
+  $('editCardNumber').value = card.number || '';
+  $('editCardOrigin').value = card.origin_name || 'VIBZ TOURIST PASS';
+  $('editCardActive').value = (card.active === false || card.active === 0) ? '0' : '1';
+  $('editCardValidUntil').value = card.valid_until || '';
+  $('editCardStatus').value = card.status || 'issued';
+  modal.hidden = false;
+}
+
+function closeCardEditModal() {
+  const modal = $('cardEditModal');
+  if (modal) modal.hidden = true;
+}
+
+$('closeEditCardModal')?.addEventListener('click', closeCardEditModal);
+$('cancelCardEditBtn')?.addEventListener('click', closeCardEditModal);
+$('clearEditCardDateBtn')?.addEventListener('click', () => {
+  $('editCardValidUntil').value = '';
+});
+$('cardEditModal')?.addEventListener('click', (e) => {
+  if (e.target === $('cardEditModal')) closeCardEditModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && $('cardEditModal') && !$('cardEditModal').hidden) {
+    closeCardEditModal();
+  }
+});
+
+$('cardEditForm')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (session?.role !== 'admin') {
+    notice('Apenas administradores podem editar cartões.', 'error');
+    return;
+  }
+  const token = $('editCardToken').value;
+  if (!token) return;
+  const saveBtn = $('saveCardEditBtn');
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Salvando...';
+  try {
+    const activeVal = $('editCardActive').value === '1';
+    const validUntilVal = $('editCardValidUntil').value.trim() || null;
+    const statusVal = $('editCardStatus').value;
+    const updated = await api(`cards/${encodeURIComponent(token)}`, {
+      method: 'PATCH',
+      body: {
+        active: activeVal,
+        valid_until: validUntilVal,
+        status: statusVal,
+      },
+    });
+    notice(`✓ Cartão ${updated.number} atualizado com sucesso!`, 'success');
+    closeCardEditModal();
+    if ($('cardResult') && !$('cardResult').hidden && $('cardResult').textContent.includes(updated.number)) {
+      renderCard(updated);
+    }
+    await Promise.allSettled([refreshCards(), refreshScannedCards(), refreshReports()]);
+  } catch (err) {
+    notice(err.message, 'error');
+  } finally {
+    saveBtn.disabled = false;
+    saveBtn.textContent = '💾 Salvar Alterações';
+  }
+});
+
 // =============================================================
 // MÓDULO BAR & CARDÁPIO DE BEBIDAS
 // =============================================================
@@ -2273,12 +2395,20 @@ function populateStockDropdowns() {
   if (entrySelect) {
     const curVal = entrySelect.value;
     entrySelect.replaceChildren();
+    const newOpt = node('option', '', '✨ + Cadastrar Nova Bebida no Cardápio e Estoque...');
+    newOpt.value = '__new__';
+    entrySelect.append(newOpt);
+
+    const group = node('optgroup');
+    group.label = 'Bebidas Cadastradas';
     for (const d of drinks) {
       const opt = node('option', '', `${d.name} (${d.dosage}) · Atual: ${d.stock_quantity} un.`);
       opt.value = d.id;
-      entrySelect.append(opt);
+      group.append(opt);
     }
-    if (curVal) entrySelect.value = curVal;
+    entrySelect.append(group);
+    if (curVal && curVal !== '__new__') entrySelect.value = curVal;
+    else if (drinks.length > 0 && curVal !== '__new__') entrySelect.value = drinks[0].id;
   }
 
   if (adjustSelect) {
@@ -2439,12 +2569,30 @@ async function refreshStockMovements() {
   }
 }
 
+function setStockEntryMode(mode) {
+  const isNew = mode === 'new';
+  if ($('stockEntryModeNew')) $('stockEntryModeNew').checked = isNew;
+  if ($('stockEntryModeExisting')) $('stockEntryModeExisting').checked = !isNew;
+  if ($('stockEntryExistingGroup')) $('stockEntryExistingGroup').style.display = isNew ? 'none' : 'block';
+  if ($('stockEntryNewGroup')) $('stockEntryNewGroup').style.display = isNew ? 'block' : 'none';
+  if (isNew) {
+    $('stockEntryNewName')?.focus();
+  } else {
+    $('stockEntryQty')?.focus();
+  }
+}
+
 function openStockEntryModal(drinkId = null) {
   $('stockEntryModal').style.display = 'block';
-  if (drinkId) {
-    $('stockEntryDrink').value = drinkId;
+  if (drinkId === '__new__') {
+    setStockEntryMode('new');
+  } else {
+    setStockEntryMode('existing');
+    if (drinkId) {
+      $('stockEntryDrink').value = drinkId;
+    }
+    $('stockEntryQty').focus();
   }
-  $('stockEntryQty').focus();
   $('stockEntryModal').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
@@ -2989,25 +3137,74 @@ $('drinkForm')?.addEventListener('submit', async (e) => {
 $('cancelEditDrinkBtn')?.addEventListener('click', resetDrinkForm);
 $('cancelEditDrinkBannerBtn')?.addEventListener('click', resetDrinkForm);
 
+$('stockEntryDrink')?.addEventListener('change', (e) => {
+  if (e.target.value === '__new__') {
+    setStockEntryMode('new');
+  }
+});
+$('stockEntryModeExisting')?.addEventListener('change', () => setStockEntryMode('existing'));
+$('stockEntryModeNew')?.addEventListener('change', () => setStockEntryMode('new'));
+
 $('stockEntryForm')?.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const drink_id = parseInt($('stockEntryDrink').value, 10);
+  const isNewMode = $('stockEntryModeNew')?.checked || $('stockEntryDrink')?.value === '__new__';
   const quantity = parseInt($('stockEntryQty').value, 10);
   const unit_cost = parseFloat($('stockEntryCost').value || '0');
   const reason = $('stockEntryReason').value.trim();
 
+  const payload = { quantity, unit_cost, reason };
+
+  if (isNewMode) {
+    const newName = $('stockEntryNewName').value.trim();
+    const newDosage = $('stockEntryNewDosage').value;
+    const newPrice = parseFloat($('stockEntryNewPrice').value || '0');
+    const newMinStock = parseInt($('stockEntryNewMinStock').value || '10', 10);
+
+    if (!newName) {
+      notice('Informe o nome da nova bebida.', 'error');
+      $('stockEntryNewName').focus();
+      return;
+    }
+    if (!newPrice || newPrice <= 0) {
+      notice('Informe um preço de venda válido para a nova bebida.', 'error');
+      $('stockEntryNewPrice').focus();
+      return;
+    }
+
+    payload.new_drink_name = newName;
+    payload.new_drink_dosage = newDosage;
+    payload.new_drink_price = newPrice;
+    payload.new_drink_min_stock = newMinStock;
+  } else {
+    const drink_id = parseInt($('stockEntryDrink').value, 10);
+    if (!drink_id) {
+      notice('Selecione uma bebida cadastrada ou marque "Cadastrar Nova Bebida".', 'error');
+      return;
+    }
+    payload.drink_id = drink_id;
+  }
+
+  const submitBtn = $('stockEntrySubmitBtn');
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Processando...'; }
+
   try {
-    await api('stock/entry', {
+    const res = await api('stock/entry', {
       method: 'POST',
-      body: { drink_id, quantity, unit_cost, reason }
+      body: payload
     });
-    notice('Entrada de estoque confirmada com sucesso!', 'success');
+    if (res.created_new_drink) {
+      notice(`✓ Nova bebida "${res.drink_name}" cadastrada com entrada de ${quantity} un.!`, 'success');
+    } else {
+      notice(`✓ Entrada de ${quantity} un. de "${res.drink_name}" confirmada!`, 'success');
+    }
     $('stockEntryForm').reset();
+    setStockEntryMode('existing');
     $('stockEntryModal').style.display = 'none';
-    await refreshStock();
-    await refreshBarMenu();
+    await Promise.allSettled([refreshStock(), refreshBarMenu()]);
   } catch (err) {
     notice(err.message, 'error');
+  } finally {
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Confirmar Entrada'; }
   }
 });
 

@@ -80,6 +80,7 @@ class Store:
                     origin_id TEXT NOT NULL REFERENCES origins(id),
                     origin_name TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'issued' CHECK(status IN ('issued', 'redeemed')),
+                    active INTEGER NOT NULL DEFAULT 1,
                     issued_at TEXT NOT NULL,
                     issued_by TEXT NOT NULL,
                     valid_until TEXT,
@@ -93,7 +94,7 @@ class Store:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT NOT NULL UNIQUE COLLATE NOCASE,
                     password_hash TEXT NOT NULL,
-                    role TEXT NOT NULL CHECK(role IN ('admin', 'operator', 'portaria', 'bar')),
+                    role TEXT NOT NULL CHECK(role IN ('admin', 'operator', 'portaria', 'bar', 'venda_cartao')),
                     active INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL
                 );
@@ -178,6 +179,11 @@ class Store:
                 CREATE INDEX IF NOT EXISTS stock_movements_type_idx ON stock_movements(movement_type);
             """)
 
+            # Migração de colunas na tabela cards se necessário
+            card_cols = [r[1] for r in db.execute("PRAGMA table_info(cards)").fetchall()]
+            if "active" not in card_cols:
+                db.execute("ALTER TABLE cards ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+
             # Migração de colunas na tabela drinks
             drink_cols = [r[1] for r in db.execute("PRAGMA table_info(drinks)").fetchall()]
             if "stock_quantity" not in drink_cols:
@@ -206,14 +212,14 @@ class Store:
 
             # Migração de roles na tabela users se necessário
             user_sql = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
-            if user_sql and "role IN ('admin', 'operator')" in user_sql[0]:
+            if user_sql and "venda_cartao" not in user_sql[0]:
                 db.execute("PRAGMA foreign_keys=OFF")
                 db.execute("DROP TABLE IF EXISTS users_migrated")
                 db.execute("""CREATE TABLE users_migrated (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT NOT NULL UNIQUE COLLATE NOCASE,
                     password_hash TEXT NOT NULL,
-                    role TEXT NOT NULL CHECK(role IN ('admin', 'operator', 'portaria', 'bar')),
+                    role TEXT NOT NULL CHECK(role IN ('admin', 'operator', 'portaria', 'bar', 'venda_cartao')),
                     active INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL
                 )""")
@@ -231,6 +237,12 @@ class Store:
                         "INSERT INTO users(username, password_hash, role, active, created_at) VALUES ('bar', ?, 'bar', 1, ?)",
                         (portaria_user[0], utc_now()),
                     )
+                venda_count = db.execute("SELECT COUNT(*) FROM users WHERE username='venda_cartao'").fetchone()[0]
+                if venda_count == 0:
+                    db.execute(
+                        "INSERT INTO users(username, password_hash, role, active, created_at) VALUES ('venda_cartao', ?, 'venda_cartao', 1, ?)",
+                        (portaria_user[0], utc_now()),
+                    )
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=20, isolation_level=None)
@@ -243,6 +255,7 @@ class Store:
     def _card(row: sqlite3.Row) -> dict:
         result = dict(row)
         result["number"] = card_number(result["id"])
+        result["active"] = bool(result.get("active", 1))
         result["expired"] = bool(result["valid_until"] and result["valid_until"] < local_today().isoformat())
         return result
 
@@ -451,6 +464,8 @@ class Store:
                 raise StoreError("Cartão não encontrado", 404)
             if row["status"] != "issued":
                 raise StoreError("Cartão já utilizado", 409)
+            if not row["active"]:
+                raise StoreError("Cartão inativado pelo administrador", 409)
             if row["valid_until"] and row["valid_until"] < local_today().isoformat():
                 raise StoreError("Cartão vencido", 409)
             db.execute(
@@ -545,11 +560,65 @@ class Store:
         finally:
             db.close()
 
+    def update_card(self, token: str, changes: dict) -> dict:
+        if not TOKEN_RE.fullmatch(token):
+            raise StoreError("QR inválido")
+        with closing(self._connect()) as db:
+            current = db.execute("SELECT * FROM cards WHERE token=?", (token,)).fetchone()
+            if not current:
+                raise StoreError("Cartão não encontrado", 404)
+
+            updates = []
+            params = []
+
+            if "valid_until" in changes:
+                vu = changes["valid_until"]
+                if vu is not None:
+                    vu = vu.strip() if isinstance(vu, str) else str(vu)
+                    if vu:
+                        try:
+                            date.fromisoformat(vu)
+                        except ValueError as exc:
+                            raise StoreError("Data de validade inválida. Use o formato AAAA-MM-DD") from exc
+                    else:
+                        vu = None
+                updates.append("valid_until = ?")
+                params.append(vu)
+
+            if "active" in changes and changes["active"] is not None:
+                is_active = 1 if changes["active"] else 0
+                updates.append("active = ?")
+                params.append(is_active)
+
+            if "status" in changes and changes["status"] is not None:
+                new_status = changes["status"].strip().lower()
+                if new_status not in {"issued", "redeemed"}:
+                    raise StoreError("Status deve ser 'issued' ou 'redeemed'")
+                if new_status == "issued":
+                    updates.append("status = 'issued', redeemed_at = NULL, redeemed_by = NULL, wristband = NULL")
+                elif new_status == "redeemed":
+                    updates.append("status = 'redeemed'")
+
+            if not updates:
+                raise StoreError("Nenhum dado informado para alteração")
+
+            params.append(token)
+            sql = f"UPDATE cards SET {', '.join(updates)} WHERE token = ?"
+            db.execute(sql, tuple(params))
+            row = db.execute(
+                """SELECT cards.*, COALESCE(u.username, cards.redeemed_by) AS redeemed_by_username
+                   FROM cards
+                   LEFT JOIN users u ON u.id = CAST(cards.redeemed_by AS INTEGER)
+                   WHERE cards.token=?""",
+                (token,),
+            ).fetchone()
+            return self._card(row)
+
     def create_user(self, username: str, password_hash: str, role: str) -> dict:
         username = username.strip().lower()
         if not re.fullmatch(r"[a-z0-9_.-]{3,40}", username):
             raise StoreError("Usuário deve ter 3 a 40 letras, números, pontos ou hífens")
-        if role not in {"admin", "operator", "portaria", "bar"}:
+        if role not in {"admin", "operator", "portaria", "bar", "venda_cartao"}:
             raise StoreError("Papel inválido")
         try:
             with closing(self._connect()) as db:
@@ -605,7 +674,7 @@ class Store:
 
             if "role" in changes:
                 new_role = changes["role"]
-                if new_role not in {"admin", "operator", "portaria", "bar"}:
+                if new_role not in {"admin", "operator", "portaria", "bar", "venda_cartao"}:
                     raise StoreError("Papel inválido")
                 if current["role"] == "admin" and new_role != "admin":
                     admin_count = db.execute(
@@ -1238,6 +1307,8 @@ class Store:
 
     def create_bar_order(self, card_identifier: str, items: list[dict], operator_uid: str, operator_username: str, public_base_url: str = "") -> dict:
         card = self.find_card_any(card_identifier, public_base_url)
+        if not card.get("active", True):
+            raise StoreError("Cartão inativado pelo administrador", 400)
         if not items:
             raise StoreError("Selecione ao menos uma bebida")
         prepared_items = []

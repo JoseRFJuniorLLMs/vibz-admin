@@ -38,7 +38,7 @@ class ApiTests(unittest.TestCase):
         admin_page = self.client.get("/admin/")
         self.assertEqual(admin_page.status_code, 200)
         self.assertEqual(admin_page.headers["cache-control"], "no-store")
-        self.assertIn("admin.js?v=20261002-v18-theme-switcher", admin_page.text)
+        self.assertIn("admin.js?v=20261002-v21-stock-new-drink", admin_page.text)
         self.assertEqual(self.client.get("/static/admin.js").headers["cache-control"], "no-store")
 
     def test_login_csrf_roles_and_redeem(self):
@@ -438,6 +438,188 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(daily_rep.status_code, 200)
         self.assertGreaterEqual(daily_rep.json()["summary"]["total_revenue"], 105.00)
         self.assertGreaterEqual(daily_rep.json()["summary"]["total_drinks_sold"], 3)
+
+    def test_venda_cartao_role_permissions(self):
+        admin_csrf = self.login()
+        # 1. Criar origem como admin
+        origin = self.client.post(
+            "/api/origins",
+            json={"name": "Kiosque Praia", "category": "Praia"},
+            headers={"X-CSRF-Token": admin_csrf}
+        ).json()
+        self.assertIn("id", origin)
+
+        # 2. Criar usuário com perfil venda_cartao
+        u_res = self.client.post(
+            "/api/users",
+            json={"username": "vendedor1", "password": "Vendedor-secret-123", "role": "venda_cartao"},
+            headers={"X-CSRF-Token": admin_csrf}
+        )
+        self.assertEqual(u_res.status_code, 201)
+        self.assertEqual(u_res.json()["role"], "venda_cartao")
+
+        # 3. Login como vendedor1
+        v_csrf = self.login("vendedor1", "Vendedor-secret-123")
+
+        # Pode gerar cartões (POST /api/cards)
+        issue_res = self.client.post(
+            "/api/cards",
+            json={"origin_id": origin["id"], "count": 2},
+            headers={"X-CSRF-Token": v_csrf}
+        )
+        self.assertEqual(issue_res.status_code, 201)
+        cards = issue_res.json()
+        self.assertEqual(len(cards), 2)
+
+        # 2. Pode exportar ZIP (POST /api/cards/export.zip)
+        exp_res = self.client.post(
+            "/api/cards/export.zip",
+            json={"tokens": [c["token"] for c in cards]},
+            headers={"X-CSRF-Token": v_csrf}
+        )
+        self.assertEqual(exp_res.status_code, 200)
+        self.assertEqual(exp_res.headers["content-type"], "application/zip")
+
+        # 3. Pode ler QR Code (POST /api/lookup)
+        lookup_res = self.client.post("/api/lookup", json={"qr": cards[0]["token"]})
+        self.assertEqual(lookup_res.status_code, 200)
+        self.assertEqual(lookup_res.json()["number"], cards[0]["number"])
+
+        # 4. NÃO pode excluir cartões (403)
+        del_res = self.client.delete(f"/api/cards/{cards[0]['token']}", headers={"X-CSRF-Token": v_csrf})
+        self.assertEqual(del_res.status_code, 403)
+
+        # 5. NÃO pode criar usuários (403)
+        new_u = self.client.post("/api/users", json={"username": "hacker", "password": "password123456", "role": "admin"}, headers={"X-CSRF-Token": v_csrf})
+        self.assertEqual(new_u.status_code, 403)
+
+        # 6. NÃO pode criar bebidas no bar (403)
+        drink_res = self.client.post("/api/bar/drinks", json={"name": "Whisky", "price": 40.0, "dosage": "dose"}, headers={"X-CSRF-Token": v_csrf})
+        self.assertEqual(drink_res.status_code, 403)
+
+    def test_card_edit_and_activation(self):
+        admin_csrf = self.login()
+        # 1. Criar origem
+        origin = self.client.post(
+            "/api/origins",
+            json={"name": "Club Privado", "category": "Gastronomia"},
+            headers={"X-CSRF-Token": admin_csrf}
+        ).json()
+
+        # 2. Emitir cartão válido até 2026-10-01 (ou seja, validade expirada ou passada)
+        issue_res = self.client.post(
+            "/api/cards",
+            json={"origin_id": origin["id"], "count": 1, "valid_until": "2026-10-05"},
+            headers={"X-CSRF-Token": admin_csrf}
+        ).json()
+        token = issue_res[0]["token"]
+
+        # 3. Inativar o cartão via PATCH
+        inactivate_res = self.client.patch(
+            f"/api/cards/{token}",
+            json={"active": False},
+            headers={"X-CSRF-Token": admin_csrf}
+        )
+        self.assertEqual(inactivate_res.status_code, 200)
+        self.assertFalse(inactivate_res.json()["active"])
+
+        # 4. Tentar liberar entrada de cartão inativado -> Deve falhar com 409
+        redeem_fail = self.client.post(
+            f"/api/cards/{token}/redeem",
+            json={"wristband": "W-01"},
+            headers={"X-CSRF-Token": admin_csrf}
+        )
+        self.assertEqual(redeem_fail.status_code, 409)
+        self.assertIn("inativado", redeem_fail.json()["detail"].lower())
+
+        # 5. Tentar pedir no bar com cartão inativado -> Deve falhar com 400
+        drink = self.client.post(
+            "/api/bar/drinks",
+            json={"name": "Cerveja Corona", "price": 20.0, "dosage": "garrafa"},
+            headers={"X-CSRF-Token": admin_csrf}
+        ).json()
+        bar_fail = self.client.post(
+            "/api/bar/order",
+            json={"card": token, "items": [{"drink_id": drink["id"], "quantity": 1}]},
+            headers={"X-CSRF-Token": admin_csrf}
+        )
+        self.assertEqual(bar_fail.status_code, 400)
+        self.assertIn("inativado", bar_fail.json()["detail"].lower())
+
+        # 6. Reativar o cartão e estender validade via PATCH (opção para o administrador ativar e mudar validade)
+        activate_res = self.client.patch(
+            f"/api/cards/{token}",
+            json={"active": True, "valid_until": "2026-12-31"},
+            headers={"X-CSRF-Token": admin_csrf}
+        )
+        self.assertEqual(activate_res.status_code, 200)
+        card_data = activate_res.json()
+        self.assertTrue(card_data["active"])
+        self.assertEqual(card_data["valid_until"], "2026-12-31")
+        self.assertFalse(card_data["expired"])
+
+        # 7. Liberar entrada do cartão agora ativado -> Sucesso
+        redeem_ok = self.client.post(
+            f"/api/cards/{token}/redeem",
+            json={"wristband": "W-01"},
+            headers={"X-CSRF-Token": admin_csrf}
+        )
+        self.assertEqual(redeem_ok.status_code, 200)
+        self.assertEqual(redeem_ok.json()["status"], "redeemed")
+
+        # 8. Administrador reseta status para 'issued' (reativação para nova entrada)
+        reissue_res = self.client.patch(
+            f"/api/cards/{token}",
+            json={"status": "issued"},
+            headers={"X-CSRF-Token": admin_csrf}
+        )
+        self.assertEqual(reissue_res.status_code, 200)
+        self.assertEqual(reissue_res.json()["status"], "issued")
+
+        # 9. Tentar editar como não-admin (portaria) -> 403 Forbidden
+        portaria_csrf = self.login("portaria", "Another-secret-456")
+        forbidden_patch = self.client.patch(
+            f"/api/cards/{token}",
+            json={"active": False},
+            headers={"X-CSRF-Token": portaria_csrf}
+        )
+        self.assertEqual(forbidden_patch.status_code, 403)
+
+    def test_stock_entry_with_new_drink(self):
+        admin_csrf = self.login()
+        # 1. Entrada de estoque cadastrando uma nova bebida diretamente
+        entry_res = self.client.post(
+            "/api/stock/entry",
+            json={
+                "new_drink_name": "Rum Bacardi Ouro",
+                "new_drink_price": 28.00,
+                "new_drink_dosage": "dose",
+                "new_drink_min_stock": 12,
+                "quantity": 30,
+                "unit_cost": 10.50,
+                "reason": "Compra inicial distribuidor"
+            },
+            headers={"X-CSRF-Token": admin_csrf}
+        )
+        self.assertEqual(entry_res.status_code, 201)
+        data = entry_res.json()
+        self.assertEqual(data["drink_name"], "Rum Bacardi Ouro")
+        self.assertEqual(data["previous_stock"], 0)
+        self.assertEqual(data["new_stock"], 30)
+        self.assertEqual(data["unit_cost"], 10.50)
+        self.assertTrue(data.get("created_new_drink"))
+
+        # 2. Verificar que a bebida agora aparece no estoque
+        overview = self.client.get("/api/stock/overview").json()
+        item = next(it for it in overview["items"] if it["name"] == "Rum Bacardi Ouro")
+        self.assertEqual(item["stock_quantity"], 30)
+        self.assertEqual(item["min_stock"], 12)
+        self.assertEqual(item["price"], 28.00)
+        self.assertEqual(item["cost_price"], 10.50)
+
+        # 3. Verificar que aparece no cardápio de bebidas do bar
+        drinks = self.client.get("/api/bar/drinks").json()
+        self.assertTrue(any(d["name"] == "Rum Bacardi Ouro" and d["price"] == 28.00 for d in drinks))
 
 
 if __name__ == "__main__":

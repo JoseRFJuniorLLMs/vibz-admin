@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#0b0b12">
   <meta name="robots" content="noindex,nofollow">
-  <link rel="stylesheet" href="../static/admin.css?v=20261002-v18-theme-switcher">
+  <link rel="stylesheet" href="../static/admin.css?v=20261002-v19-role-venda-cartao">
   <script>
     try { if (localStorage.getItem('vibz-theme') === 'light') document.documentElement.setAttribute('data-theme', 'light'); } catch(e) {}
   </script>
   <script src="../static/vendor/jsQR.js" defer></script>
-  <script type="module" src="../static/admin.js?v=20261002-v18-theme-switcher"></script>
+  <script type="module" src="../static/admin.js?v=20261002-v21-stock-new-drink"></script>
 </head>
 <body>
   <header class="topbar">
@@ -619,17 +619,61 @@
         <!-- Modal / Painel: Nova Entrada de Estoque -->
         <div id="stockEntryModal" class="panel" style="margin-top:20px;border:1.5px solid #ff7b4b;background:#181522;display:none">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-            <h3 style="margin:0;font-size:18px;color:#ff9e73">📥 Nova Entrada de Estoque (Reposição)</h3>
+            <div>
+              <h3 style="margin:0;font-size:18px;color:#ff9e73">📥 Nova Entrada de Estoque (Reposição / Nova Bebida)</h3>
+              <p style="margin:3px 0 0 0;font-size:12px;color:#a09cb0">Selecione uma bebida cadastrada ou cadastre uma nova bebida no cardápio diretamente nesta entrada.</p>
+            </div>
             <button id="closeStockEntryBtn" type="button" class="text-button" style="padding:0;color:#ff8790">✖ Fechar</button>
           </div>
-          <form id="stockEntryForm" class="form-grid" style="grid-template-columns:minmax(200px,2fr) minmax(120px,1fr) minmax(130px,1fr) minmax(220px,2fr) auto;align-items:flex-end">
-            <label>Bebida
-              <select id="stockEntryDrink" required></select>
-            </label>
-            <label>Qtd. Entrada<input id="stockEntryQty" type="number" min="1" max="10000" required placeholder="Ex.: 24"></label>
-            <label>Custo Unitário (R$)<input id="stockEntryCost" type="number" step="0.50" min="0" placeholder="Opcional"></label>
-            <label>Fornecedor / Motivo<input id="stockEntryReason" placeholder="Ex.: Compra Distribuidora X / NF 123" maxlength="200"></label>
-            <button type="submit" class="primary" style="margin-top:22px">Confirmar Entrada</button>
+          <form id="stockEntryForm">
+            <div style="display:flex;gap:14px;align-items:center;margin-bottom:14px;background:#120f1a;padding:8px 12px;border-radius:10px;border:1px solid #362f44">
+              <span style="font-size:13px;font-weight:700;color:#e2dcfa">Modo:</span>
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;color:#fff;margin:0">
+                <input type="radio" name="stockEntryMode" id="stockEntryModeExisting" value="existing" checked>
+                Bebida já cadastrada
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;color:#ff9e73;font-weight:700;margin:0">
+                <input type="radio" name="stockEntryMode" id="stockEntryModeNew" value="new">
+                ✨ Cadastrar Nova Bebida
+              </label>
+            </div>
+
+            <!-- Grupo 1: Bebida existente -->
+            <div id="stockEntryExistingGroup" style="margin-bottom:12px">
+              <label style="display:block;font-size:12px;font-weight:700;color:#d0bdca;margin-bottom:4px">Bebida Cadastrada *</label>
+              <select id="stockEntryDrink" style="width:100%"></select>
+            </div>
+
+            <!-- Grupo 2: Nova Bebida (aparece quando selecionado "Cadastrar Nova Bebida") -->
+            <div id="stockEntryNewGroup" style="display:none;background:#201726;border:1px dashed #ff7b4b;border-radius:12px;padding:14px;margin-bottom:14px">
+              <div style="display:grid;grid-template-columns:minmax(200px,2fr) minmax(130px,1fr) minmax(140px,1fr) minmax(130px,1fr);gap:12px;align-items:flex-end">
+                <label style="font-size:12px;font-weight:700;color:#ff9e73">Nome da Nova Bebida *
+                  <input id="stockEntryNewName" placeholder="Ex.: Whisky Chivas 12 Anos" maxlength="120" style="margin-top:4px">
+                </label>
+                <label style="font-size:12px;font-weight:700;color:#d0bdca">Dosagem *
+                  <select id="stockEntryNewDosage" style="margin-top:4px">
+                    <option value="dose">Dose</option>
+                    <option value="garrafa">Garrafa</option>
+                    <option value="lata">Lata</option>
+                    <option value="unidade">Unidade</option>
+                  </select>
+                </label>
+                <label style="font-size:12px;font-weight:700;color:#d0bdca">Preço Venda (R$) *
+                  <input id="stockEntryNewPrice" type="number" step="0.50" min="0.01" placeholder="Ex.: 38.00" style="margin-top:4px">
+                </label>
+                <label style="font-size:12px;font-weight:700;color:#d0bdca">Estoque Mínimo
+                  <input id="stockEntryNewMinStock" type="number" min="0" value="10" placeholder="Ex.: 10" style="margin-top:4px">
+                </label>
+              </div>
+            </div>
+
+            <!-- Grupo 3: Quantidade, Custo e Motivo -->
+            <div class="form-grid" style="grid-template-columns:minmax(120px,1fr) minmax(130px,1fr) minmax(220px,2fr) auto;align-items:flex-end">
+              <label>Qtd. Entrada *<input id="stockEntryQty" type="number" min="1" max="100000" required placeholder="Ex.: 24"></label>
+              <label>Custo Unitário (R$)<input id="stockEntryCost" type="number" step="0.50" min="0" placeholder="Ex.: 15.00 (Opcional)"></label>
+              <label>Fornecedor / Motivo<input id="stockEntryReason" placeholder="Ex.: Compra Distribuidora / NF 123" maxlength="200"></label>
+              <button type="submit" id="stockEntrySubmitBtn" class="primary" style="margin-top:22px">Confirmar Entrada</button>
+            </div>
           </form>
         </div>
 
@@ -840,7 +884,7 @@
           <label>Usuário<input id="newUsername" required minlength="3" maxlength="40" pattern="[A-Za-z0-9_.-]+" autocomplete="off" placeholder="nome.usuario"></label>
           <label id="lblNewPassword">Senha <span id="pwdHint" style="font-size:11px;font-weight:400;color:#bcb8c4">(mín. 12 caracteres)</span><input id="newPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password" placeholder="Mínimo 12 caracteres"></label>
           <label id="lblConfirmPassword">Confirmar senha<input id="confirmPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
-          <label>Permissão<select id="newRole" required><option value="portaria">Portaria: lê QR da portaria (somente portaria)</option><option value="bar">Bar: lê QR do bar e lança consumo (somente bar)</option><option value="admin">Administrador: acesso completo a todos os menus</option></select></label>
+          <label>Permissão<select id="newRole" required><option value="portaria">Portaria: lê QR da portaria (somente portaria)</option><option value="bar">Bar: lê QR do bar e lança consumo (somente bar)</option><option value="venda_cartao">Venda de Cartão: gera cartões e lê QR Code</option><option value="admin">Administrador: acesso completo a todos os menus</option></select></label>
           <label id="lblUserActive" style="display:none">Status<select id="userActive"><option value="1">Ativo</option><option value="0">Inativo</option></select></label>
           <div style="grid-column:1/-1;display:flex;gap:10px;align-items:center;margin-top:6px">
             <button id="userSubmitBtn" type="submit" class="primary">Cadastrar usuário</button>
@@ -876,6 +920,58 @@
         <div id="modalConsumptionContent">
           <!-- Conteúdo gerado dinamicamente via JS -->
         </div>
+      </div>
+    </div>
+    <!-- MODAL DE EDIÇÃO E ATIVAÇÃO DO CARTÃO -->
+    <div id="cardEditModal" class="modal-backdrop" hidden>
+      <div class="modal-box" style="max-width: 520px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1px solid #ffffff18;padding-bottom:14px;margin-bottom:18px">
+          <div>
+            <h3 id="editCardModalTitle" style="margin:0;font-size:20px;color:#fff;letter-spacing:-0.02em">✏️ Editar Cartão VIP</h3>
+            <p id="editCardModalSubtitle" style="margin:4px 0 0 0;font-size:13px;color:#a09cb0">Altere a validade e status de ativação do cartão.</p>
+          </div>
+          <button id="closeEditCardModal" type="button" class="text-button" style="font-size:24px;line-height:1;padding:0 8px;cursor:pointer;color:#bbb" title="Fechar (Esc)">✕</button>
+        </div>
+        <form id="cardEditForm">
+          <input type="hidden" id="editCardToken">
+          <div style="display:flex;flex-direction:column;gap:16px">
+            <div>
+              <label style="display:block;font-size:12px;font-weight:700;color:#ff9e73;text-transform:uppercase;margin-bottom:4px">Número do Cartão</label>
+              <input type="text" id="editCardNumber" readonly style="width:100%;font-weight:700;background:rgba(255,255,255,0.05);color:#fff;cursor:default">
+            </div>
+            <div>
+              <label style="display:block;font-size:12px;font-weight:700;color:#d0bdca;margin-bottom:4px">Origem / Parceiro</label>
+              <input type="text" id="editCardOrigin" readonly style="width:100%;background:rgba(255,255,255,0.05);color:#bbb;cursor:default">
+            </div>
+            <div>
+              <label for="editCardActive" style="display:block;font-size:12px;font-weight:700;color:#d0bdca;margin-bottom:4px">Situação do Cartão</label>
+              <select id="editCardActive" style="width:100%">
+                <option value="1">✅ Ativo (Liberado para uso e entrada)</option>
+                <option value="0">⛔ Inativado (Bloquear entrada e bar)</option>
+              </select>
+              <small style="font-size:11px;color:#8f8b99;display:block;margin-top:4px">Se inativado, o cartão não poderá ser liberado na portaria nem receber pedidos no bar.</small>
+            </div>
+            <div>
+              <label for="editCardValidUntil" style="display:block;font-size:12px;font-weight:700;color:#d0bdca;margin-bottom:4px">Data de Validade</label>
+              <div style="display:flex;gap:8px">
+                <input type="date" id="editCardValidUntil" style="flex:1">
+                <button type="button" id="clearEditCardDateBtn" class="text-button" style="padding:4px 8px;font-size:12px;color:#ff9e73;border:1px solid rgba(255,255,255,0.15);border-radius:8px">Sem validade</button>
+              </div>
+              <small style="font-size:11px;color:#8f8b99;display:block;margin-top:4px">Para reativar um cartão com validade vencida, altere para uma data futura ou limpe.</small>
+            </div>
+            <div id="editCardStatusWrap">
+              <label for="editCardStatus" style="display:block;font-size:12px;font-weight:700;color:#d0bdca;margin-bottom:4px">Situação de Entrada no Evento</label>
+              <select id="editCardStatus" style="width:100%">
+                <option value="issued">🎟️ Emitido (Permitir liberação de nova entrada)</option>
+                <option value="redeemed">✅ Utilizado (Entrada já confirmada)</option>
+              </select>
+            </div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:24px;border-top:1px solid #ffffff18;padding-top:16px">
+            <button type="button" id="cancelCardEditBtn" class="text-button" style="padding:8px 16px">Cancelar</button>
+            <button type="submit" id="saveCardEditBtn" class="primary" style="padding:8px 20px">💾 Salvar Alterações</button>
+          </div>
+        </form>
       </div>
     </div>
   </main>
