@@ -788,24 +788,18 @@ class Store:
         if not raw:
             raise StoreError("Informe o cartão ou escaneie o QR", 400)
         # 1. Se URL
-        if raw.startswith("http://") or raw.startswith("https://"):
-            if public_base_url:
-                try:
-                    token = parse_qr(raw, public_base_url)
-                    return self.find(token)
-                except Exception:
-                    pass
-            clean_path = urlsplit(raw).path.rstrip("/")
-            last_segment = clean_path.split("/")[-1] if clean_path else ""
-            if TOKEN_RE.fullmatch(last_segment):
-                try:
-                    return self.find(last_segment)
-                except Exception:
-                    pass
-        # 2. Se token direto
-        if TOKEN_RE.fullmatch(raw):
+        if public_base_url and (raw.startswith("http://") or raw.startswith("https://")):
             try:
-                return self.find(raw)
+                token = parse_qr(raw, public_base_url)
+                return self.find(token)
+            except Exception:
+                pass
+
+        # 2. Se contiver token de 32 caracteres
+        token_match = re.search(r"[A-Za-z0-9_-]{32}", raw)
+        if token_match:
+            try:
+                return self.find(token_match.group(0))
             except Exception:
                 pass
         # 3. Se número VIBZ-XXXXXX ou apenas números

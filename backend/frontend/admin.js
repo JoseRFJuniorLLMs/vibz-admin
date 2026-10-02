@@ -1899,9 +1899,8 @@ async function scanBarFrame(timestamp) {
     }
     if (value && barScanActive) {
       stopBarCamera();
-      if ($('barCardInput')) $('barCardInput').value = value;
       await findBarCard(value);
-      playBling();
+      if (currentBarCard) playBling();
     }
   } catch (error) {
     notice(error.message, 'error');
@@ -1980,8 +1979,12 @@ async function findBarCard(val) {
     return;
   }
   try {
-    const res = await api(`bar/card/${encodeURIComponent(raw)}`);
+    const res = await api('bar/lookup', {
+      method: 'POST',
+      body: { qr: raw }
+    });
     currentBarCard = res.card;
+    if ($('barCardInput')) $('barCardInput').value = res.card.number;
     $('barCardStatusBox').style.display = 'block';
     $('barCardNumber').textContent = `${res.card.number}`;
     $('barCardOrigin').textContent = `Origem: ${res.card.origin_name || 'VIBZ'} · Status: ${res.card.status === 'redeemed' ? 'Entrada confirmada' : 'Emitido'}`;

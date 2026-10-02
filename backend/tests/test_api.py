@@ -38,7 +38,7 @@ class ApiTests(unittest.TestCase):
         admin_page = self.client.get("/admin/")
         self.assertEqual(admin_page.status_code, 200)
         self.assertEqual(admin_page.headers["cache-control"], "no-store")
-        self.assertIn("admin.js?v=20261002-v11-users-fix", admin_page.text)
+        self.assertIn("admin.js?v=20261002-v12-bar-lookup", admin_page.text)
         self.assertEqual(self.client.get("/static/admin.js").headers["cache-control"], "no-store")
 
     def test_login_csrf_roles_and_redeem(self):
@@ -298,6 +298,12 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(card_cons.status_code, 200)
         self.assertEqual(card_cons.json()["total_spent"], 0.0)
         self.assertEqual(card_cons.json()["total_orders"], 0)
+
+        # Testar lookup por POST com URL completa de QR Code (como a câmera envia)
+        full_qr_url = f"https://35.247.217.66.nip.io/vibz-admin/p/{card['token']}"
+        qr_lookup = self.client.post("/api/bar/lookup", json={"qr": full_qr_url})
+        self.assertEqual(qr_lookup.status_code, 200)
+        self.assertEqual(qr_lookup.json()["card"]["number"], card["number"])
 
         # 6. Lançar pedido de consumo no cartão
         order_res = self.client.post(

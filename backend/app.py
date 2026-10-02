@@ -528,7 +528,11 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
         store_call(store.delete_drink, drink_id)
         return {"ok": True, "drink_id": drink_id}
 
-    @app.get("/api/bar/card/{identifier}")
+    @app.post("/api/bar/lookup")
+    def bar_lookup(data: LookupInput, _staff: Actor = Depends(actor)):
+        return store_call(store.get_card_consumption, data.qr, settings.public_base_url)
+
+    @app.get("/api/bar/card/{identifier:path}")
     def get_bar_card_consumption(identifier: str, _staff: Actor = Depends(actor)):
         return store_call(store.get_card_consumption, identifier, settings.public_base_url)
 
