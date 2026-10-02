@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#0b0b12">
   <meta name="robots" content="noindex,nofollow">
-  <link rel="stylesheet" href="../static/admin.css?v=20261002-v12-bar-lookup">
+  <link rel="stylesheet" href="../static/admin.css?v=20261002-v14-menu-stock">
   <script src="../static/vendor/jsQR.js" defer></script>
-  <script type="module" src="../static/admin.js?v=20261002-v12-bar-lookup"></script>
+  <script type="module" src="../static/admin.js?v=20261002-v14-menu-stock"></script>
 </head>
 <body>
   <header class="topbar">
@@ -36,6 +36,8 @@
         <button class="tab" data-tab="cards">Cartões emitidos</button>
         <button class="tab" data-tab="scanned">Cartões lidos</button>
         <button class="tab" data-tab="bar">🍸 Bar</button>
+        <button class="tab admin-only" data-tab="menu">📋 Cardápio</button>
+        <button class="tab admin-only" data-tab="stock">📦 Estoque</button>
         <button class="tab" data-tab="reports">Relatórios</button>
         <button class="tab admin-only" data-tab="origins">Origens</button>
         <button class="tab" data-tab="partners">Estabelecimentos</button>
@@ -175,6 +177,7 @@
           <div class="button-row" style="margin:0;gap:8px">
             <button id="barSubNavPdv" type="button" class="primary bar-sub-btn">🛒 Novo Consumo (PDV)</button>
             <button id="barSubNavMenu" type="button" class="bar-sub-btn">📋 Cardápio de Bebidas</button>
+            <button id="barSubNavStock" type="button" class="bar-sub-btn">📦 Estoque de Bebidas</button>
             <button id="barSubNavClients" type="button" class="bar-sub-btn">👤 Consumo por Cliente</button>
             <button id="barSubNavDaily" type="button" class="bar-sub-btn">📊 Vendas do Dia</button>
           </div>
@@ -253,42 +256,7 @@
           </div>
         </div>
 
-        <!-- 2. SUB-ABA: CARDÁPIO DE BEBIDAS (Gerenciar & Editar) -->
-        <div id="barMenuView" class="bar-view" hidden>
-          <div class="panel admin-only">
-            <h3 id="drinkFormTitle" style="margin:0 0 14px">Cadastrar Nova Bebida</h3>
-            <form id="drinkForm" class="form-grid" style="grid-template-columns:minmax(200px,2fr) minmax(130px,1fr) minmax(140px,1fr) auto">
-              <input type="hidden" id="drinkEditId">
-              <label>Nome da bebida<input id="drinkName" required placeholder="Ex.: Gin Tropical" maxlength="120"></label>
-              <label>Preço (R$)<input id="drinkPrice" type="number" step="0.50" min="0.50" required placeholder="35.00"></label>
-              <label>Dosagem<select id="drinkDosage" required><option value="dose">Dose</option><option value="garrafa">Garrafa</option><option value="lata">Lata</option><option value="unidade">Unidade</option></select></label>
-              <div style="display:flex;gap:6px">
-                <button type="submit" class="primary" id="saveDrinkBtn">Salvar bebida</button>
-                <button type="button" id="cancelEditDrinkBtn" style="display:none">Cancelar</button>
-              </div>
-            </form>
-          </div>
-
-          <div style="margin-top:20px">
-            <div class="panel-head"><div><h3>Bebidas cadastradas no bar</h3><p>Edite nome, valor ou dosagem a qualquer momento.</p></div></div>
-            <div class="panel table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Bebida</th>
-                    <th>Dosagem</th>
-                    <th>Valor</th>
-                    <th>Status</th>
-                    <th>Ações</th>
-                  </tr>
-                </thead>
-                <tbody id="drinksBody"></tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-        <!-- 3. SUB-ABA: RELATÓRIO DE CONSUMO POR CLIENTE -->
+        <!-- 2. SUB-ABA: RELATÓRIO DE CONSUMO POR CLIENTE -->
         <div id="barClientsView" class="bar-view" hidden>
           <div class="panel filters">
             <label style="flex:1">Buscar por número do cartão ou origem<input id="clientConsumptionQuery" placeholder="Ex.: VIBZ-000001 ou Pousada"></label>
@@ -400,6 +368,235 @@
               </table>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- SEÇÃO CARDÁPIO DE BEBIDAS -->
+      <section id="menuTab" class="tab-panel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>📋 Cardápio de Bebidas</h2>
+            <p>Gerencie opções, valores de venda, custos e estoque mínimo dos drinks.</p>
+          </div>
+          <div class="button-row" style="margin:0;gap:8px">
+            <button id="goToBarFromMenuBtn" type="button" class="primary">🍸 Ir para o Bar (PDV)</button>
+            <button id="goToStockFromMenuBtn" type="button">📦 Ver Estoque</button>
+            <button id="refreshMenuBtn" type="button">Atualizar Cardápio</button>
+          </div>
+        </div>
+
+        <div class="panel admin-only">
+          <div id="drinkEditBanner" style="display:none;align-items:center;justify-content:space-between;background:#2d1d28;border:1px solid #ff7b4b;padding:8px 14px;border-radius:8px;margin-bottom:14px">
+            <span style="font-weight:700;color:#ff9e73" id="drinkFormModeTitle">✏️ Modo Edição de Bebida</span>
+            <button id="cancelEditDrinkBannerBtn" type="button" class="text-button" style="padding:0;color:#ff8790;font-size:12px">✖ Cancelar edição</button>
+          </div>
+          <h3 id="drinkFormTitle" style="margin:0 0 14px">Cadastrar Nova Bebida</h3>
+          <form id="drinkForm" class="form-grid" style="grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)) auto;align-items:flex-end">
+            <input type="hidden" id="drinkEditId">
+            <label style="min-width:180px">Nome da bebida<input id="drinkName" required placeholder="Ex.: Gin Tropical" maxlength="120"></label>
+            <label>Preço Venda (R$)<input id="drinkPrice" type="number" step="0.50" min="0.50" required placeholder="35.00"></label>
+            <label>Preço Custo (R$)<input id="drinkCostPrice" type="number" step="0.50" min="0.00" placeholder="Opcional"></label>
+            <label>Dosagem<select id="drinkDosage" required><option value="dose">Dose</option><option value="garrafa">Garrafa</option><option value="lata">Lata</option><option value="unidade">Unidade</option></select></label>
+            <label id="lblDrinkStock">Estoque Inicial<input id="drinkStock" type="number" min="0" value="50" placeholder="50"></label>
+            <label>Estoque Mínimo<input id="drinkMinStock" type="number" min="0" value="10" placeholder="10"></label>
+            <div style="display:flex;gap:6px">
+              <button type="submit" class="primary" id="saveDrinkBtn" style="padding:10px 18px">Salvar bebida</button>
+              <button type="button" id="cancelEditDrinkBtn" style="display:none;padding:10px 14px">Cancelar</button>
+            </div>
+          </form>
+        </div>
+
+        <div style="margin-top:24px">
+          <div class="panel-head">
+            <div>
+              <h3>Bebidas Cadastradas no Bar</h3>
+              <p>Edite nome, valor, dosagem ou ative/desative a qualquer momento.</p>
+            </div>
+            <div style="display:flex;gap:8px">
+              <input id="menuSearchInput" placeholder="🔍 Filtrar bebida..." style="min-width:200px;font-size:13px;padding:6px 12px;border-radius:8px">
+            </div>
+          </div>
+          <div class="panel table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Bebida</th>
+                  <th>Dosagem</th>
+                  <th>Preço Venda</th>
+                  <th>Preço Custo</th>
+                  <th>Estoque Atual</th>
+                  <th>Status</th>
+                  <th style="min-width:200px">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="drinksBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- SEÇÃO ESTOQUE DE BEBIDAS & RELATÓRIOS -->
+      <section id="stockTab" class="tab-panel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>📦 Estoque de Bebidas & Relatórios</h2>
+            <p>Controle de inventário integrado às vendas do bar, registro de reposições e extrato de movimentações.</p>
+          </div>
+          <div class="button-row" style="margin:0;gap:8px">
+            <button id="openStockEntryBtn" type="button" class="primary">+ Nova Entrada de Estoque</button>
+            <button id="openStockAdjustBtn" type="button">⚖️ Ajuste de Inventário</button>
+            <button id="exportStockCsvBtn" type="button">Exportar CSV</button>
+            <button id="printStockBtn" type="button">Imprimir Posição</button>
+            <button id="refreshStockBtn" type="button">Atualizar</button>
+          </div>
+        </div>
+
+        <!-- Indicadores / KPIs de Estoque -->
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <span class="kpi-icon">📦</span>
+            <div class="kpi-content">
+              <span class="kpi-label">Total de Itens em Estoque</span>
+              <strong id="kpiStockTotalItems" class="kpi-value">0</strong>
+              <small id="kpiStockTotalDrinks" class="kpi-sub">0 bebidas ativas</small>
+            </div>
+          </div>
+          <div class="kpi-card highlight-orange">
+            <span class="kpi-icon">⚠️</span>
+            <div class="kpi-content">
+              <span class="kpi-label">Estoque Baixo / Reposição</span>
+              <strong id="kpiStockLowCount" class="kpi-value">0</strong>
+              <small class="kpi-sub">Abaixo do estoque mínimo</small>
+            </div>
+          </div>
+          <div class="kpi-card highlight-purple">
+            <span class="kpi-icon">🚫</span>
+            <div class="kpi-content">
+              <span class="kpi-label">Itens Zerados / Esgotados</span>
+              <strong id="kpiStockOutCount" class="kpi-value">0</strong>
+              <small class="kpi-sub">Sem estoque no bar</small>
+            </div>
+          </div>
+          <div class="kpi-card highlight-green">
+            <span class="kpi-icon">💰</span>
+            <div class="kpi-content">
+              <span class="kpi-label">Valor do Estoque (Venda)</span>
+              <strong id="kpiStockSaleValue" class="kpi-value">R$ 0,00</strong>
+              <small id="kpiStockCostValue" class="kpi-sub">Custo: R$ 0,00</small>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sub-navegação / Toggle de visão no Estoque -->
+        <div class="button-row" style="margin:20px 0 14px;gap:8px">
+          <button id="stockSubTabOverview" type="button" class="primary stock-sub-btn">📋 Posição Atual do Estoque</button>
+          <button id="stockSubTabMovements" type="button" class="stock-sub-btn">📑 Extrato de Movimentações (Entradas & Vendas)</button>
+        </div>
+
+        <!-- Painel 1: POSIÇÃO ATUAL DO ESTOQUE -->
+        <div id="stockOverviewView">
+          <div class="panel table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Bebida</th>
+                  <th>Dosagem</th>
+                  <th>Estoque Atual</th>
+                  <th>Estoque Mínimo</th>
+                  <th>Status</th>
+                  <th>Preço Venda</th>
+                  <th>Valor Total em Estoque</th>
+                  <th style="min-width:140px">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="stockOverviewBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Painel 2: EXTRATO & RELATÓRIO DE MOVIMENTAÇÕES -->
+        <div id="stockMovementsView" hidden>
+          <div class="panel filters" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+            <label style="min-width:160px">Período
+              <select id="stockPeriodFilter">
+                <option value="today">Hoje</option>
+                <option value="7">Últimos 7 dias</option>
+                <option value="15">Últimos 15 dias</option>
+                <option value="30" selected>Últimos 30 dias</option>
+                <option value="90">Últimos 90 dias</option>
+                <option value="365">Tudo (1 ano)</option>
+              </select>
+            </label>
+            <label style="min-width:180px">Filtrar por Bebida
+              <select id="stockDrinkFilter">
+                <option value="all">Todas as bebidas</option>
+              </select>
+            </label>
+            <label style="min-width:160px">Tipo de Movimento
+              <select id="stockTypeFilter">
+                <option value="all">Todos os tipos</option>
+                <option value="entrada">Entradas (+)</option>
+                <option value="venda">Vendas no Bar (-)</option>
+                <option value="ajuste">Ajustes / Balanço (±)</option>
+              </select>
+            </label>
+            <button id="stockFilterApplyBtn" type="button">Filtrar</button>
+          </div>
+
+          <div class="panel table-wrap" style="margin-top:14px">
+            <table>
+              <thead>
+                <tr>
+                  <th>Data / Hora</th>
+                  <th>Bebida</th>
+                  <th>Tipo</th>
+                  <th>Quantidade</th>
+                  <th>Estoque Anterior ➔ Novo</th>
+                  <th>Motivo / Pedido / Ref.</th>
+                  <th>Operador</th>
+                </tr>
+              </thead>
+              <tbody id="stockMovementsBody"></tbody>
+            </table>
+          </div>
+          <div class="pager">
+            <button id="stockMovementsPrev" type="button">Anterior</button>
+            <span id="stockMovementsPage"></span>
+            <button id="stockMovementsNext" type="button">Próxima</button>
+          </div>
+        </div>
+
+        <!-- Modal / Painel: Nova Entrada de Estoque -->
+        <div id="stockEntryModal" class="panel" style="margin-top:20px;border:1.5px solid #ff7b4b;background:#181522;display:none">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <h3 style="margin:0;font-size:18px;color:#ff9e73">📥 Nova Entrada de Estoque (Reposição)</h3>
+            <button id="closeStockEntryBtn" type="button" class="text-button" style="padding:0;color:#ff8790">✖ Fechar</button>
+          </div>
+          <form id="stockEntryForm" class="form-grid" style="grid-template-columns:minmax(200px,2fr) minmax(120px,1fr) minmax(130px,1fr) minmax(220px,2fr) auto;align-items:flex-end">
+            <label>Bebida
+              <select id="stockEntryDrink" required></select>
+            </label>
+            <label>Qtd. Entrada<input id="stockEntryQty" type="number" min="1" max="10000" required placeholder="Ex.: 24"></label>
+            <label>Custo Unitário (R$)<input id="stockEntryCost" type="number" step="0.50" min="0" placeholder="Opcional"></label>
+            <label>Fornecedor / Motivo<input id="stockEntryReason" placeholder="Ex.: Compra Distribuidora X / NF 123" maxlength="200"></label>
+            <button type="submit" class="primary" style="margin-top:22px">Confirmar Entrada</button>
+          </form>
+        </div>
+
+        <!-- Modal / Painel: Ajuste de Inventário -->
+        <div id="stockAdjustModal" class="panel" style="margin-top:20px;border:1.5px solid #ff4b6e;background:#1b1420;display:none">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <h3 style="margin:0;font-size:18px;color:#ff8599">⚖️ Ajuste / Balanço de Inventário</h3>
+            <button id="closeStockAdjustBtn" type="button" class="text-button" style="padding:0;color:#ff8790">✖ Fechar</button>
+          </div>
+          <form id="stockAdjustForm" class="form-grid" style="grid-template-columns:minmax(200px,2fr) minmax(140px,1fr) minmax(240px,2fr) auto;align-items:flex-end">
+            <label>Bebida
+              <select id="stockAdjustDrink" required></select>
+            </label>
+            <label>Nova Quantidade Real<input id="stockAdjustQty" type="number" min="0" max="100000" required placeholder="Contagem física"></label>
+            <label>Motivo do Ajuste<input id="stockAdjustReason" required placeholder="Ex.: Balanço semanal, quebra de garrafa..." maxlength="200"></label>
+            <button type="submit" class="danger-btn" style="margin-top:22px;padding:9px 16px;font-weight:700">Salvar Ajuste</button>
+          </form>
         </div>
       </section>
 
@@ -583,16 +780,37 @@
       </section>
 
       <section id="usersTab" class="tab-panel" hidden>
-        <div class="panel-head"><div><h2>Usuários</h2><p>Cadastre contas para a equipe. Somente administradores acessam esta seção.</p></div></div>
+        <div class="panel-head"><div><h2>Usuários</h2><p>Cadastre e edite contas da equipe. Somente administradores acessam esta seção.</p></div></div>
         <form id="userForm" class="panel user-form">
+          <input type="hidden" id="userEditId">
+          <div id="userEditBanner" style="grid-column:1/-1;display:none;align-items:center;justify-content:space-between;background:#2d1d28;border:1px solid #ff7b4b;padding:8px 14px;border-radius:8px">
+            <span style="font-weight:700;color:#ff9e73" id="userFormTitle">Modo Edição de Usuário</span>
+            <button id="cancelUserEditBtn" type="button" class="text-button" style="padding:0;color:#ff8790;font-size:12px">✖ Cancelar edição</button>
+          </div>
           <label>Usuário<input id="newUsername" required minlength="3" maxlength="40" pattern="[A-Za-z0-9_.-]+" autocomplete="off" placeholder="nome.usuario"></label>
-          <label>Senha inicial<input id="newPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password" placeholder="Mínimo 12 caracteres"></label>
-          <label>Confirmar senha<input id="confirmPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
+          <label id="lblNewPassword">Senha <span id="pwdHint" style="font-size:11px;font-weight:400;color:#bcb8c4">(mín. 12 caracteres)</span><input id="newPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password" placeholder="Mínimo 12 caracteres"></label>
+          <label id="lblConfirmPassword">Confirmar senha<input id="confirmPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
           <label>Permissão<select id="newRole" required><option value="portaria">Portaria: lê QR da portaria (somente portaria)</option><option value="bar">Bar: lê QR do bar e lança consumo (somente bar)</option><option value="admin">Administrador: acesso completo a todos os menus</option></select></label>
-          <button type="submit" class="primary">Cadastrar usuário</button>
+          <label id="lblUserActive" style="display:none">Status<select id="userActive"><option value="1">Ativo</option><option value="0">Inativo</option></select></label>
+          <div style="grid-column:1/-1;display:flex;gap:10px;align-items:center;margin-top:6px">
+            <button id="userSubmitBtn" type="submit" class="primary">Cadastrar usuário</button>
+          </div>
         </form>
         <p class="hint">A senha é guardada somente como hash. Informe a senha inicial ao novo usuário por um canal privado.</p>
-        <div class="panel table-wrap"><table><thead><tr><th>Usuário</th><th>Permissão</th><th>Status</th><th>Criado em</th></tr></thead><tbody id="usersBody"></tbody></table></div>
+        <div class="panel table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Usuário</th>
+                <th>Permissão</th>
+                <th>Status</th>
+                <th>Criado em</th>
+                <th style="min-width:140px">Ações</th>
+              </tr>
+            </thead>
+            <tbody id="usersBody"></tbody>
+          </table>
+        </div>
         <div class="pager"><button id="usersPrev" type="button">Anterior</button><span id="usersPage"></span><button id="usersNext" type="button">Próxima</button></div>
       </section>
     </section>

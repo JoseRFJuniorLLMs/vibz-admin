@@ -58,6 +58,12 @@ class NewUserInput(BaseModel):
     role: Literal["admin", "operator", "portaria", "bar"]
 
 
+class UserUpdateInput(BaseModel):
+    role: Literal["admin", "operator", "portaria", "bar"] | None = None
+    password: str | None = Field(default=None, min_length=12, max_length=256)
+    active: bool | None = None
+
+
 class OriginInput(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     category: str = Field(min_length=2, max_length=60)
@@ -107,13 +113,32 @@ class DrinkInput(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     price: float = Field(gt=0)
     dosage: str = Field(pattern=r"^(dose|garrafa|lata|unidade)$")
+    cost_price: float = Field(default=0.0, ge=0)
+    initial_stock: int = Field(default=50, ge=0)
+    min_stock: int = Field(default=10, ge=0)
 
 
 class DrinkUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=120)
     price: float | None = Field(default=None, gt=0)
     dosage: str | None = Field(default=None, pattern=r"^(dose|garrafa|lata|unidade)$")
+    cost_price: float | None = Field(default=None, ge=0)
+    stock_quantity: int | None = Field(default=None, ge=0)
+    min_stock: int | None = Field(default=None, ge=0)
     active: bool | None = None
+
+
+class StockEntryInput(BaseModel):
+    drink_id: int
+    quantity: int = Field(ge=1, le=100000)
+    unit_cost: float = Field(default=0.0, ge=0)
+    reason: str = Field(default="", max_length=200)
+
+
+class StockAdjustInput(BaseModel):
+    drink_id: int
+    new_quantity: int = Field(ge=0, le=100000)
+    reason: str = Field(default="", max_length=200)
 
 
 class BarOrderItemInput(BaseModel):
@@ -291,11 +316,11 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
             COOKIE_NAME, token, max_age=settings.session_seconds, path=settings.cookie_path,
             secure=settings.secure_cookie, httponly=True, samesite="strict",
         )
-        return {"username": user["username"], "role": user["role"], "csrf_token": csrf}
+        return {"id": user["id"], "username": user["username"], "role": user["role"], "csrf_token": csrf}
 
     @app.get("/api/session")
     def session(staff: Actor = Depends(actor)):
-        return {"username": staff.username, "role": staff.role, "csrf_token": staff.csrf_token}
+        return {"id": staff.id, "username": staff.username, "role": staff.role, "csrf_token": staff.csrf_token}
 
     @app.post("/api/logout", status_code=204)
     def logout(response: Response, staff: Actor = Depends(csrf_actor)):
@@ -310,6 +335,22 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
     @app.post("/api/users", status_code=201)
     def create_user(data: NewUserInput, _staff: Actor = Depends(admin)):
         return store_call(store.create_user, data.username, hash_password(data.password), data.role)
+
+    @app.patch("/api/users/{user_id}")
+    def update_user(user_id: int, data: UserUpdateInput, _staff: Actor = Depends(admin)):
+        changes = {}
+        if data.role is not None:
+            changes["role"] = data.role
+        if data.password:
+            changes["password_hash"] = hash_password(data.password)
+        if data.active is not None:
+            changes["active"] = 1 if data.active else 0
+        return store_call(store.update_user, user_id, changes)
+
+    @app.delete("/api/users/{user_id}")
+    def delete_user(user_id: int, staff: Actor = Depends(admin)):
+        deleted = store_call(store.delete_user, user_id, staff.id)
+        return {"ok": True, "user": deleted}
 
     @app.get("/api/origins")
     def origins(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
@@ -515,18 +556,71 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
         return store.list_drinks(active_only=active_only)
 
     @app.post("/api/bar/drinks", status_code=201)
-    def create_drink(data: DrinkInput, _staff: Actor = Depends(admin)):
-        return store_call(store.create_drink, data.name, data.price, data.dosage)
+    def create_drink(data: DrinkInput, staff: Actor = Depends(admin)):
+        return store_call(
+            store.create_drink,
+            data.name,
+            data.price,
+            data.dosage,
+            data.cost_price,
+            data.initial_stock,
+            data.min_stock,
+            str(staff.id),
+            staff.username,
+        )
 
     @app.patch("/api/bar/drinks/{drink_id}")
-    def update_drink(drink_id: int, data: DrinkUpdate, _staff: Actor = Depends(admin)):
+    def update_drink(drink_id: int, data: DrinkUpdate, staff: Actor = Depends(admin)):
         changes = data.model_dump(exclude_unset=True)
-        return store_call(store.update_drink, drink_id, changes)
+        return store_call(store.update_drink, drink_id, changes, str(staff.id), staff.username)
 
     @app.delete("/api/bar/drinks/{drink_id}")
     def delete_drink(drink_id: int, _staff: Actor = Depends(admin)):
         store_call(store.delete_drink, drink_id)
         return {"ok": True, "drink_id": drink_id}
+
+    # -------------------------------------------------------------
+    # ENDPOINTS ESTOQUE DE BEBIDAS & RELATÓRIOS DO ESTOQUE
+    # -------------------------------------------------------------
+    @app.get("/api/stock/overview")
+    def stock_overview(_staff: Actor = Depends(admin_read)):
+        return store.stock_overview_report()
+
+    @app.get("/api/stock/movements")
+    def stock_movements(
+        page: int = Query(1, ge=1),
+        page_size: int = Query(25, ge=1, le=100),
+        drink_id: int | None = None,
+        movement_type: str | None = None,
+        period: str = "30",
+        _staff: Actor = Depends(admin_read),
+    ):
+        return store.stock_movements_report(
+            page=page, page_size=page_size, drink_id=drink_id, movement_type=movement_type, period=period
+        )
+
+    @app.post("/api/stock/entry", status_code=201)
+    def add_stock_entry(data: StockEntryInput, staff: Actor = Depends(admin)):
+        return store_call(
+            store.add_stock_entry,
+            data.drink_id,
+            data.quantity,
+            data.unit_cost,
+            data.reason,
+            str(staff.id),
+            staff.username,
+        )
+
+    @app.post("/api/stock/adjust")
+    def adjust_stock(data: StockAdjustInput, staff: Actor = Depends(admin)):
+        return store_call(
+            store.adjust_stock,
+            data.drink_id,
+            data.new_quantity,
+            data.reason,
+            str(staff.id),
+            staff.username,
+        )
 
     @app.post("/api/bar/lookup")
     def bar_lookup(data: LookupInput, _staff: Actor = Depends(actor)):

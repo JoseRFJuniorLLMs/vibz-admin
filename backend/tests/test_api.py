@@ -38,7 +38,7 @@ class ApiTests(unittest.TestCase):
         admin_page = self.client.get("/admin/")
         self.assertEqual(admin_page.status_code, 200)
         self.assertEqual(admin_page.headers["cache-control"], "no-store")
-        self.assertIn("admin.js?v=20261002-v12-bar-lookup", admin_page.text)
+        self.assertIn("admin.js?v=20261002-v14-menu-stock", admin_page.text)
         self.assertEqual(self.client.get("/static/admin.js").headers["cache-control"], "no-store")
 
     def test_login_csrf_roles_and_redeem(self):
@@ -137,6 +137,30 @@ class ApiTests(unittest.TestCase):
         portaria_created = self.client.post("/api/users", json=portaria_data, headers={"X-CSRF-Token": admin_csrf})
         self.assertEqual(portaria_created.status_code, 201)
         self.assertEqual(portaria_created.json()["role"], "portaria")
+        portaria_user_id = portaria_created.json()["id"]
+
+        # 4. Editar usuário (papel, status ativo/inativo, senha)
+        edit_res = self.client.patch(
+            f"/api/users/{portaria_user_id}",
+            json={"role": "operator", "active": 1, "password": "New-long-password-999"},
+            headers={"X-CSRF-Token": admin_csrf}
+        )
+        self.assertEqual(edit_res.status_code, 200)
+        self.assertEqual(edit_res.json()["role"], "operator")
+
+        # Login com nova senha do usuário editado
+        self.assertEqual(
+            self.client.post("/api/login", json={"username": "atendente.portaria", "password": "New-long-password-999"}).status_code,
+            200
+        )
+        # Operador não pode deletar usuários (403)
+        self.assertEqual(self.client.delete(f"/api/users/{portaria_user_id}").status_code, 403)
+
+        # 5. Admin deleta usuário
+        admin_csrf = self.login()
+        del_res = self.client.delete(f"/api/users/{portaria_user_id}", headers={"X-CSRF-Token": admin_csrf})
+        self.assertEqual(del_res.status_code, 200)
+        self.assertEqual(del_res.json()["user"]["username"], "atendente.portaria")
 
     def test_partner_listing_and_admin_updates(self):
         self.store.seed_partners(entries())
@@ -270,24 +294,71 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(gin["price"], 35.0)
         self.assertEqual(gin["dosage"], "dose")
 
-        # 2. Cadastrar nova bebida editável
+        # 2. Cadastrar nova bebida editável com custo e estoque inicial
         new_drink_res = self.client.post(
             "/api/bar/drinks",
-            json={"name": "Caipiroska de Morango", "price": 32.50, "dosage": "dose"},
+            json={
+                "name": "Caipiroska de Morango",
+                "price": 32.50,
+                "cost_price": 12.00,
+                "dosage": "dose",
+                "initial_stock": 50,
+                "min_stock": 10
+            },
             headers={"X-CSRF-Token": csrf}
         )
         self.assertEqual(new_drink_res.status_code, 201)
         created_drink = new_drink_res.json()
         drink_id = created_drink["id"]
+        self.assertEqual(created_drink["cost_price"], 12.00)
+        self.assertEqual(created_drink["stock_quantity"], 50)
+        self.assertEqual(created_drink["min_stock"], 10)
 
-        # 3. Editar bebida (preço e dosagem)
+        # 3. Editar bebida (preço, custo e dosagem)
         update_res = self.client.patch(
             f"/api/bar/drinks/{drink_id}",
-            json={"price": 35.00, "dosage": "dose"},
+            json={"price": 35.00, "cost_price": 14.00, "dosage": "dose", "min_stock": 15},
             headers={"X-CSRF-Token": csrf}
         )
         self.assertEqual(update_res.status_code, 200)
         self.assertEqual(update_res.json()["price"], 35.00)
+        self.assertEqual(update_res.json()["cost_price"], 14.00)
+        self.assertEqual(update_res.json()["min_stock"], 15)
+
+        # 3.1 Entrada manual de estoque
+        entry_res = self.client.post(
+            "/api/stock/entry",
+            json={
+                "drink_id": drink_id,
+                "quantity": 20,
+                "unit_cost": 13.50,
+                "reason": "Compra distribuidor"
+            },
+            headers={"X-CSRF-Token": csrf}
+        )
+        self.assertEqual(entry_res.status_code, 201)
+        self.assertEqual(entry_res.json()["new_stock"], 70)
+
+        # 3.2 Ajuste / balanço de estoque
+        adjust_res = self.client.post(
+            "/api/stock/adjust",
+            json={
+                "drink_id": drink_id,
+                "new_quantity": 65,
+                "reason": "Balanço físico semanal"
+            },
+            headers={"X-CSRF-Token": csrf}
+        )
+        self.assertEqual(adjust_res.status_code, 200)
+        self.assertEqual(adjust_res.json()["new_stock"], 65)
+
+        # 3.3 Relatório / posição de estoque
+        overview_res = self.client.get("/api/stock/overview")
+        self.assertEqual(overview_res.status_code, 200)
+        overview_data = overview_res.json()
+        self.assertIn("kpis", overview_data)
+        item_ov = next(item for item in overview_data["items"] if item["id"] == drink_id)
+        self.assertEqual(item_ov["stock_quantity"], 65)
 
         # 4. Criar cartão para associar ao consumo do bar
         origin = self.store.create_origin("Bar Teste", "Restaurante", "admin")
@@ -305,7 +376,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(qr_lookup.status_code, 200)
         self.assertEqual(qr_lookup.json()["card"]["number"], card["number"])
 
-        # 6. Lançar pedido de consumo no cartão
+        # 6. Lançar pedido de consumo no cartão (deve abater estoque da bebida)
         order_res = self.client.post(
             "/api/bar/order",
             json={
@@ -322,6 +393,19 @@ class ApiTests(unittest.TestCase):
         # 2x 35.0 + 1x 35.0 = 105.00
         self.assertEqual(order_data["total_amount"], 105.00)
         self.assertEqual(len(order_data["items"]), 2)
+
+        # Verificar se estoque foi reduzido de 65 para 64
+        overview_after = self.client.get("/api/stock/overview").json()
+        item_ov_after = next(item for item in overview_after["items"] if item["id"] == drink_id)
+        self.assertEqual(item_ov_after["stock_quantity"], 64)
+
+        # 6.1 Extrato de movimentações de estoque
+        movements_res = self.client.get(f"/api/stock/movements?drink_id={drink_id}")
+        self.assertEqual(movements_res.status_code, 200)
+        mov_types = [m["movement_type"] for m in movements_res.json()["items"]]
+        self.assertIn("entrada", mov_types)
+        self.assertIn("ajuste", mov_types)
+        self.assertIn("venda", mov_types)
 
         # 7. Relatório de consumo por cliente
         cons_rep = self.client.get(f"/api/bar/reports/consumption?q={card['number']}")

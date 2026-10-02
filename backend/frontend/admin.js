@@ -139,8 +139,9 @@ async function showLoggedIn(data) {
 
   $('issueOperatorNote').hidden = isAdmin;
 
-  // Sub-abas do Bar: se não for admin, oculta gestão administrativa de cardápio e clientes
+  // Sub-abas do Bar: se não for admin, oculta gestão administrativa de cardápio, estoque e clientes
   if ($('barSubNavMenu')) $('barSubNavMenu').hidden = !isAdmin;
+  if ($('barSubNavStock')) $('barSubNavStock').hidden = !isAdmin;
   if ($('barSubNavClients')) $('barSubNavClients').hidden = !isAdmin;
 
   if (isBar) {
@@ -191,6 +192,8 @@ function switchTab(name) {
     }, 15000);
   }
   if (name === 'bar') initBarModule().catch((error) => notice(error.message, 'error'));
+  if (name === 'menu' && isAdmin) refreshBarMenu().catch((error) => notice(error.message, 'error'));
+  if (name === 'stock' && isAdmin) refreshStock().catch((error) => notice(error.message, 'error'));
   if (name === 'reports' && isAdmin) refreshReports().catch((error) => notice(error.message, 'error'));
   if (name === 'origins' && isAdmin) refreshOrigins().catch((error) => notice(error.message, 'error'));
   if (name === 'partners' && isAdmin) refreshPartners().catch((error) => notice(error.message, 'error'));
@@ -205,6 +208,40 @@ function renderPager(prefix, result) {
   $(`${prefix}Next`).disabled = result.page >= pageCount;
 }
 
+function editUser(user) {
+  $('userEditId').value = user.id;
+  $('userEditBanner').style.display = 'flex';
+  $('userFormTitle').textContent = `✏️ Editando: ${user.username}`;
+  $('newUsername').value = user.username;
+  $('newUsername').disabled = true;
+  $('newRole').value = user.role;
+  $('lblUserActive').style.display = 'block';
+  $('userActive').value = user.active ? '1' : '0';
+  $('newPassword').value = '';
+  $('newPassword').required = false;
+  $('confirmPassword').value = '';
+  $('confirmPassword').required = false;
+  $('pwdHint').textContent = '(deixe em branco para manter a atual)';
+  $('userSubmitBtn').textContent = 'Salvar alterações';
+  $('userForm').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function resetUserForm() {
+  $('userEditId').value = '';
+  $('userEditBanner').style.display = 'none';
+  $('newUsername').value = '';
+  $('newUsername').disabled = false;
+  $('newPassword').value = '';
+  $('newPassword').required = true;
+  $('confirmPassword').value = '';
+  $('confirmPassword').required = true;
+  $('pwdHint').textContent = '(mín. 12 caracteres)';
+  $('lblUserActive').style.display = 'none';
+  $('userActive').value = '1';
+  $('newRole').value = 'portaria';
+  $('userSubmitBtn').textContent = 'Cadastrar usuário';
+}
+
 async function refreshUsers() {
   const result = await api(`users?page=${usersPage}&page_size=20`);
   const body = $('usersBody');
@@ -214,16 +251,51 @@ async function refreshUsers() {
     let roleTxt = 'Portaria';
     if (user.role === 'admin') roleTxt = 'Administrador';
     else if (user.role === 'bar') roleTxt = 'Bar';
-    row.append(node('td', '', user.username),
+
+    const actionsCell = node('td');
+    actionsCell.style.display = 'flex';
+    actionsCell.style.gap = '6px';
+    actionsCell.style.alignItems = 'center';
+
+    const editBtn = node('button', '', '✏️ Editar');
+    editBtn.type = 'button';
+    editBtn.style.padding = '4px 10px';
+    editBtn.style.fontSize = '12px';
+    editBtn.onclick = () => editUser(user);
+    actionsCell.append(editBtn);
+
+    if (session && session.id !== user.id) {
+      const delBtn = node('button', 'danger-btn', '🗑️ Excluir');
+      delBtn.type = 'button';
+      delBtn.style.padding = '4px 10px';
+      delBtn.style.fontSize = '12px';
+      delBtn.onclick = async () => {
+        if (!window.confirm(`Tem certeza que deseja excluir o usuário "${user.username}"?`)) return;
+        try {
+          await api(`users/${user.id}`, { method: 'DELETE' });
+          notice(`Usuário "${user.username}" excluído com sucesso.`, 'success');
+          if ($('userEditId').value === String(user.id)) resetUserForm();
+          await refreshUsers();
+        } catch (err) {
+          notice(err.message, 'error');
+        }
+      };
+      actionsCell.append(delBtn);
+    }
+
+    row.append(
+      node('td', '', user.username),
       node('td', '', roleTxt),
       node('td', '', user.active ? 'Ativo' : 'Inativo'),
-      node('td', '', formatDate(user.created_at)));
+      node('td', '', formatDate(user.created_at)),
+      actionsCell
+    );
     body.append(row);
   }
   if (!result.items.length) {
     const row = node('tr');
     const cell = node('td', '', 'Nenhum usuário cadastrado.');
-    cell.colSpan = 4;
+    cell.colSpan = 5;
     row.append(cell);
     body.append(row);
   }
@@ -661,25 +733,105 @@ function renderIssued(cards) {
   for (const card of cards) {
     const item = node('article', 'card-preview-item');
     const cardImgUrl = card.card_data_url || new URL(`cards/${encodeURIComponent(card.token)}/card.png`, apiRoot).toString();
+    const qrImgUrl = new URL(`cards/${encodeURIComponent(card.token)}/qr.svg`, apiRoot).toString();
 
-    const image = node('img', 'card-full-img');
-    image.alt = `Cartão VIP ${card.number}`;
-    image.src = cardImgUrl;
+    const rowWrap = node('div', 'card-preview-split');
+    rowWrap.style.display = 'flex';
+    rowWrap.style.alignItems = 'stretch';
+    rowWrap.style.justifyContent = 'center';
+    rowWrap.style.gap = '16px';
+    rowWrap.style.flexWrap = 'wrap';
+    rowWrap.style.width = '100%';
 
-    const btnRow = node('div', 'button-row');
-    btnRow.style.margin = '4px 0 0 0';
-    btnRow.style.width = '100%';
+    // Lado Esquerdo: Cartão VIP
+    const cardCol = node('div');
+    cardCol.style.flex = '1 1 360px';
+    cardCol.style.maxWidth = '520px';
+    cardCol.style.display = 'flex';
+    cardCol.style.flexDirection = 'column';
+    cardCol.style.gap = '8px';
 
-    const dlBtn = node('a', 'primary dl-card-btn', `⬇️ Baixar PNG (${card.number})`);
-    dlBtn.href = cardImgUrl;
-    dlBtn.download = `${card.number}-CARTAO-VIP.png`;
+    const cardTitle = node('div', '', `💳 Cartão VIP · ${card.number}`);
+    cardTitle.style.fontSize = '14px';
+    cardTitle.style.fontWeight = '700';
+    cardTitle.style.color = '#ff9e73';
 
-    btnRow.append(dlBtn);
-    item.append(image, btnRow);
+    const cardImg = node('img', 'card-full-img');
+    cardImg.alt = `Cartão VIP ${card.number}`;
+    cardImg.src = cardImgUrl;
+    cardImg.style.width = '100%';
+    cardImg.style.borderRadius = '12px';
+    cardImg.style.boxShadow = '0 8px 24px rgba(0,0,0,0.45)';
+    cardImg.style.border = '1px solid #ffffff22';
+
+    const dlCardBtn = node('a', 'primary dl-card-btn', `⬇️ Baixar Cartão PNG (${card.number})`);
+    dlCardBtn.href = cardImgUrl;
+    dlCardBtn.download = `${card.number}-CARTAO-VIP.png`;
+    dlCardBtn.style.textAlign = 'center';
+    dlCardBtn.style.padding = '8px 12px';
+    dlCardBtn.style.fontSize = '13px';
+    dlCardBtn.style.marginTop = '4px';
+
+    cardCol.append(cardTitle, cardImg, dlCardBtn);
+
+    // Lado Direito: Imagem do QR Code isolado
+    const qrCol = node('div');
+    qrCol.style.flex = '0 0 auto';
+    qrCol.style.width = '210px';
+    qrCol.style.background = '#ffffff';
+    qrCol.style.borderRadius = '14px';
+    qrCol.style.padding = '14px';
+    qrCol.style.display = 'flex';
+    qrCol.style.flexDirection = 'column';
+    qrCol.style.alignItems = 'center';
+    qrCol.style.justifyContent = 'space-between';
+    qrCol.style.boxShadow = '0 8px 24px rgba(0,0,0,0.45)';
+    qrCol.style.border = '1.5px solid #ff7b4b';
+
+    const qrHeader = node('div');
+    qrHeader.style.textAlign = 'center';
+    qrHeader.style.marginBottom = '6px';
+    const qrLabel = node('div', '', 'QR CODE DO CARTÃO');
+    qrLabel.style.fontSize = '11px';
+    qrLabel.style.fontWeight = '900';
+    qrLabel.style.color = '#ff7b4b';
+    qrLabel.style.letterSpacing = '0.5px';
+    const qrNum = node('div', '', card.number);
+    qrNum.style.fontSize = '15px';
+    qrNum.style.fontWeight = '800';
+    qrNum.style.color = '#111111';
+    qrHeader.append(qrLabel, qrNum);
+
+    const qrImg = node('img');
+    qrImg.alt = `QR Code ${card.number}`;
+    qrImg.src = qrImgUrl;
+    qrImg.style.width = '160px';
+    qrImg.style.height = '160px';
+    qrImg.style.display = 'block';
+    qrImg.style.margin = '4px 0';
+
+    const dlQrBtn = node('a', '', `⬇️ Baixar QR (SVG)`);
+    dlQrBtn.href = qrImgUrl;
+    dlQrBtn.download = `${card.number}-QR.svg`;
+    dlQrBtn.style.display = 'inline-block';
+    dlQrBtn.style.width = '100%';
+    dlQrBtn.style.textAlign = 'center';
+    dlQrBtn.style.padding = '6px 10px';
+    dlQrBtn.style.background = '#1a1824';
+    dlQrBtn.style.color = '#ffffff';
+    dlQrBtn.style.borderRadius = '8px';
+    dlQrBtn.style.fontSize = '12px';
+    dlQrBtn.style.fontWeight = '700';
+    dlQrBtn.style.textDecoration = 'none';
+
+    qrCol.append(qrHeader, qrImg, dlQrBtn);
+
+    rowWrap.append(cardCol, qrCol);
+    item.append(rowWrap);
     target.append(item);
   }
   $('issuedActions').hidden = cards.length === 0;
-  $('issuedCount').textContent = `${cards.length} cartão(ões) completo(s) gerado(s) em alta resolução e salvo(s) no banco.`;
+  $('issuedCount').textContent = `${cards.length} cartão(ões) completo(s) gerado(s) com QR code individual salvo(s) no banco.`;
 }
 
 function renderCard(card) {
@@ -905,24 +1057,61 @@ $('originsPrev').addEventListener('click', () => { originsPage--; refreshOrigins
 $('originsNext').addEventListener('click', () => { originsPage++; refreshOrigins().catch((error) => notice(error.message, 'error')); });
 $('usersPrev').addEventListener('click', () => { usersPage--; refreshUsers().catch((error) => notice(error.message, 'error')); });
 $('usersNext').addEventListener('click', () => { usersPage++; refreshUsers().catch((error) => notice(error.message, 'error')); });
+$('cancelUserEditBtn').addEventListener('click', resetUserForm);
 $('userForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   if (session?.role !== 'admin') return;
+  const editId = $('userEditId').value;
   const password = $('newPassword').value;
-  if (password !== $('confirmPassword').value) {
-    notice('As senhas não coincidem.', 'error');
-    return;
+  const confirm = $('confirmPassword').value;
+
+  if (password || confirm || !editId) {
+    if (password !== confirm) {
+      notice('As senhas não coincidem.', 'error');
+      return;
+    }
+    if (password && password.length < 12) {
+      notice('A senha deve ter no mínimo 12 caracteres.', 'error');
+      return;
+    }
   }
+
   const role = $('newRole').value;
-  if (role === 'admin' && !window.confirm('Este usuário terá acesso completo, inclusive emissão de cartões e cadastro de outros administradores. Continuar?')) return;
-  const button = event.target.querySelector('button[type="submit"]');
+  const button = $('userSubmitBtn') || event.target.querySelector('button[type="submit"]');
   button.disabled = true;
   try {
-    await api('users', {method: 'POST', body: {username: $('newUsername').value.trim(), password, role}});
-    event.target.reset();
-    usersPage = 1;
-    await refreshUsers();
-    notice('Usuário cadastrado. Informe a senha inicial por um canal privado.', 'success');
+    if (editId) {
+      const payload = {
+        role,
+        active: $('userActive').value === '1',
+      };
+      if (password) {
+        payload.password = password;
+      }
+      if (role === 'admin' && !window.confirm('Confirmar alteração de permissão para Administrador?')) {
+        button.disabled = false;
+        return;
+      }
+      await api(`users/${editId}`, {method: 'PATCH', body: payload});
+      notice('Usuário atualizado com sucesso.', 'success');
+      resetUserForm();
+      await refreshUsers();
+    } else {
+      if (!password) {
+        notice('Informe uma senha inicial.', 'error');
+        button.disabled = false;
+        return;
+      }
+      if (role === 'admin' && !window.confirm('Este usuário terá acesso completo, inclusive emissão de cartões e cadastro de outros administradores. Continuar?')) {
+        button.disabled = false;
+        return;
+      }
+      await api('users', {method: 'POST', body: {username: $('newUsername').value.trim(), password, role}});
+      resetUserForm();
+      usersPage = 1;
+      await refreshUsers();
+      notice('Usuário cadastrado com sucesso. Informe a senha inicial por um canal privado.', 'success');
+    }
   } catch (error) { notice(error.message, 'error'); }
   finally { button.disabled = false; }
 });
@@ -1559,16 +1748,24 @@ async function initBarModule() {
 
 function switchBarSubTab(name) {
   if (name !== 'pdv') stopBarCamera();
+  if (name === 'menu') {
+    switchTab('menu');
+    return;
+  }
+  if (name === 'stock') {
+    switchTab('stock');
+    return;
+  }
   barSubTab = name;
   const tabs = {
     pdv: $('barPdvView'),
-    menu: $('barMenuView'),
     clients: $('barClientsView'),
     daily: $('barDailyView')
   };
   const btns = {
     pdv: $('barSubNavPdv'),
     menu: $('barSubNavMenu'),
+    stock: $('barSubNavStock'),
     clients: $('barSubNavClients'),
     daily: $('barSubNavDaily')
   };
@@ -1582,8 +1779,6 @@ function switchBarSubTab(name) {
   if (name === 'pdv') {
     renderCart();
     renderQuickMenu();
-  } else if (name === 'menu') {
-    refreshBarMenu().catch((err) => notice(err.message, 'error'));
   } else if (name === 'clients') {
     consumptionPage = 1;
     refreshClientConsumption().catch((err) => notice(err.message, 'error'));
@@ -1601,6 +1796,7 @@ async function refreshBarMenu() {
   }
   renderDrinksTable();
   renderQuickMenu();
+  populateStockDropdowns();
 }
 
 function renderQuickMenu() {
@@ -1631,7 +1827,7 @@ function renderQuickMenu() {
   }
 
   if (!activeDrinks.length) {
-    grid.append(node('p', 'hint', 'Nenhuma bebida ativa no momento. Cadastre opções na aba "Cardápio de Bebidas".'));
+    grid.append(node('p', 'hint', 'Nenhuma bebida ativa no momento. Cadastre opções na aba "Cardápio".'));
   }
 }
 
@@ -1640,13 +1836,29 @@ function renderDrinksTable() {
   if (!body) return;
   body.replaceChildren();
 
-  for (const drink of currentDrinks) {
+  const query = normalizeStr($('menuSearchInput')?.value || '');
+  const filtered = currentDrinks.filter((d) => !query || normalizeStr(d.name).includes(query) || normalizeStr(d.dosage).includes(query));
+
+  for (const drink of filtered) {
     const row = node('tr');
 
     const nameCell = node('td', '', drink.name);
     const dosageCell = node('td');
     dosageCell.append(node('span', `dosage-badge dosage-${drink.dosage}`, drink.dosage));
     const priceCell = node('td', '', formatMoney(drink.price));
+    const costCell = node('td', '', formatMoney(drink.cost_price || 0));
+
+    let stockBadgeClass = 'valid';
+    let stockStatusText = `${drink.stock_quantity ?? 0} un.`;
+    if ((drink.stock_quantity ?? 0) <= 0) {
+      stockBadgeClass = 'used';
+      stockStatusText = '0 un. (Zerado)';
+    } else if ((drink.stock_quantity ?? 0) <= (drink.min_stock ?? 10)) {
+      stockBadgeClass = 'revoked';
+      stockStatusText = `${drink.stock_quantity} un. (Baixo)`;
+    }
+    const stockCell = node('td');
+    stockCell.append(node('span', `badge ${stockBadgeClass}`, stockStatusText));
 
     const statusBadge = node('span', `badge ${drink.active ? 'valid' : 'used'}`, drink.active ? 'Ativo' : 'Inativo');
     const statusCell = node('td');
@@ -1655,16 +1867,26 @@ function renderDrinksTable() {
     const actionWrap = node('div', 'button-row');
     actionWrap.style.margin = '0';
     actionWrap.style.gap = '6px';
+    actionWrap.style.alignItems = 'center';
 
-    const editBtn = node('button', '', 'Editar');
+    const editBtn = node('button', '', '✏️ Editar');
     editBtn.type = 'button';
-    editBtn.style.padding = '5px 9px';
+    editBtn.style.padding = '4px 8px';
     editBtn.style.fontSize = '12px';
     editBtn.addEventListener('click', () => editDrink(drink));
 
+    const entryBtn = node('button', 'primary', '+ Entrada');
+    entryBtn.type = 'button';
+    entryBtn.style.padding = '4px 8px';
+    entryBtn.style.fontSize = '12px';
+    entryBtn.addEventListener('click', () => {
+      switchTab('stock');
+      openStockEntryModal(drink.id);
+    });
+
     const toggleBtn = node('button', '', drink.active ? 'Desativar' : 'Ativar');
     toggleBtn.type = 'button';
-    toggleBtn.style.padding = '5px 9px';
+    toggleBtn.style.padding = '4px 8px';
     toggleBtn.style.fontSize = '12px';
     toggleBtn.addEventListener('click', async () => {
       try {
@@ -1678,7 +1900,7 @@ function renderDrinksTable() {
 
     const delBtn = node('button', 'danger-btn', '🗑️ Excluir');
     delBtn.type = 'button';
-    delBtn.style.padding = '5px 9px';
+    delBtn.style.padding = '4px 8px';
     delBtn.style.fontSize = '12px';
     delBtn.addEventListener('click', async () => {
       if (!window.confirm(`Deseja realmente excluir ou desativar a bebida "${drink.name}"?`)) return;
@@ -1691,18 +1913,18 @@ function renderDrinksTable() {
       }
     });
 
-    actionWrap.append(editBtn, toggleBtn, delBtn);
+    actionWrap.append(editBtn, entryBtn, toggleBtn, delBtn);
     const actionCell = node('td');
     actionCell.append(actionWrap);
 
-    row.append(nameCell, dosageCell, priceCell, statusCell, actionCell);
+    row.append(nameCell, dosageCell, priceCell, costCell, stockCell, statusCell, actionCell);
     body.append(row);
   }
 
-  if (!currentDrinks.length) {
+  if (!filtered.length) {
     const row = node('tr');
-    const cell = node('td', '', 'Nenhuma bebida cadastrada ainda.');
-    cell.colSpan = 5;
+    const cell = node('td', '', 'Nenhuma bebida encontrada.');
+    cell.colSpan = 7;
     row.append(cell);
     body.append(row);
   }
@@ -1712,7 +1934,12 @@ function editDrink(drink) {
   $('drinkEditId').value = drink.id;
   $('drinkName').value = drink.name;
   $('drinkPrice').value = drink.price;
+  $('drinkCostPrice').value = drink.cost_price || 0;
   $('drinkDosage').value = drink.dosage;
+  $('drinkStock').value = drink.stock_quantity ?? 50;
+  $('drinkMinStock').value = drink.min_stock ?? 10;
+  $('drinkEditBanner').style.display = 'flex';
+  $('drinkFormModeTitle').textContent = `✏️ Modo Edição: ${drink.name}`;
   $('drinkFormTitle').textContent = `Editar Bebida: ${drink.name}`;
   $('saveDrinkBtn').textContent = 'Salvar alterações';
   $('cancelEditDrinkBtn').style.display = 'inline-block';
@@ -1723,9 +1950,241 @@ function editDrink(drink) {
 function resetDrinkForm() {
   $('drinkEditId').value = '';
   $('drinkForm').reset();
+  $('drinkEditBanner').style.display = 'none';
   $('drinkFormTitle').textContent = 'Cadastrar Nova Bebida';
   $('saveDrinkBtn').textContent = 'Salvar bebida';
   $('cancelEditDrinkBtn').style.display = 'none';
+}
+
+// -------------------------------------------------------------
+// GESTÃO DE ESTOQUE & RELATÓRIOS DO ESTOQUE
+// -------------------------------------------------------------
+let currentStockOverview = null;
+let stockMovementsPage = 1;
+
+async function refreshStock() {
+  try {
+    currentStockOverview = await api('stock/overview');
+    renderStockOverview();
+    populateStockDropdowns();
+    await refreshStockMovements();
+  } catch (err) {
+    notice(`Erro ao carregar estoque: ${err.message}`, 'error');
+  }
+}
+
+function populateStockDropdowns() {
+  const drinks = currentStockOverview?.items || currentDrinks || [];
+  const entrySelect = $('stockEntryDrink');
+  const adjustSelect = $('stockAdjustDrink');
+  const filterSelect = $('stockDrinkFilter');
+
+  if (entrySelect) {
+    const curVal = entrySelect.value;
+    entrySelect.replaceChildren();
+    for (const d of drinks) {
+      const opt = node('option', '', `${d.name} (${d.dosage}) · Atual: ${d.stock_quantity} un.`);
+      opt.value = d.id;
+      entrySelect.append(opt);
+    }
+    if (curVal) entrySelect.value = curVal;
+  }
+
+  if (adjustSelect) {
+    const curVal = adjustSelect.value;
+    adjustSelect.replaceChildren();
+    for (const d of drinks) {
+      const opt = node('option', '', `${d.name} (${d.dosage}) · Atual: ${d.stock_quantity} un.`);
+      opt.value = d.id;
+      adjustSelect.append(opt);
+    }
+    if (curVal) adjustSelect.value = curVal;
+  }
+
+  if (filterSelect) {
+    const curVal = filterSelect.value;
+    filterSelect.replaceChildren();
+    const allOpt = node('option', '', 'Todas as bebidas');
+    allOpt.value = 'all';
+    filterSelect.append(allOpt);
+    for (const d of drinks) {
+      const opt = node('option', '', `${d.name} (${d.dosage})`);
+      opt.value = d.id;
+      filterSelect.append(opt);
+    }
+    if (curVal) filterSelect.value = curVal;
+  }
+}
+
+function renderStockOverview() {
+  if (!currentStockOverview) return;
+  const kpis = currentStockOverview.kpis;
+  $('kpiStockTotalItems').textContent = `${kpis.total_stock_items} un.`;
+  $('kpiStockTotalDrinks').textContent = `${kpis.total_drinks_count} bebidas ativas`;
+  $('kpiStockLowCount').textContent = kpis.low_stock_count;
+  $('kpiStockOutCount').textContent = kpis.out_of_stock_count;
+  $('kpiStockSaleValue').textContent = formatMoney(kpis.total_sale_value);
+  $('kpiStockCostValue').textContent = `Custo: ${formatMoney(kpis.total_cost_value)}`;
+
+  const body = $('stockOverviewBody');
+  if (!body) return;
+  body.replaceChildren();
+
+  for (const item of currentStockOverview.items) {
+    const row = node('tr');
+
+    let badgeClass = 'valid';
+    let statusText = 'Normal';
+    if (item.status === 'zerado') {
+      badgeClass = 'used';
+      statusText = 'Zerado / Esgotado';
+    } else if (item.status === 'baixo') {
+      badgeClass = 'revoked';
+      statusText = 'Estoque Baixo';
+    }
+
+    const actionCell = node('td');
+    actionCell.style.display = 'flex';
+    actionCell.style.gap = '6px';
+
+    const entryBtn = node('button', 'primary', '+ Entrada');
+    entryBtn.type = 'button';
+    entryBtn.style.padding = '4px 8px';
+    entryBtn.style.fontSize = '12px';
+    entryBtn.onclick = () => openStockEntryModal(item.id);
+
+    const adjustBtn = node('button', '', 'Ajustar');
+    adjustBtn.type = 'button';
+    adjustBtn.style.padding = '4px 8px';
+    adjustBtn.style.fontSize = '12px';
+    adjustBtn.onclick = () => openStockAdjustModal(item.id, item.stock_quantity);
+
+    actionCell.append(entryBtn, adjustBtn);
+
+    const statusBadgeCell = node('td');
+    statusBadgeCell.append(node('span', `badge ${badgeClass}`, statusText));
+
+    row.append(
+      node('td', '', item.name),
+      node('td', '', item.dosage),
+      node('td', '', `${item.stock_quantity} un.`),
+      node('td', '', `${item.min_stock} un.`),
+      statusBadgeCell,
+      node('td', '', formatMoney(item.price)),
+      node('td', '', formatMoney(item.total_sale_value)),
+      actionCell
+    );
+    body.append(row);
+  }
+
+  if (!currentStockOverview.items.length) {
+    const row = node('tr');
+    const cell = node('td', '', 'Nenhuma bebida cadastrada no estoque.');
+    cell.colSpan = 8;
+    row.append(cell);
+    body.append(row);
+  }
+}
+
+async function refreshStockMovements() {
+  const period = $('stockPeriodFilter')?.value || '30';
+  const drinkId = $('stockDrinkFilter')?.value;
+  const movementType = $('stockTypeFilter')?.value || 'all';
+
+  let url = `stock/movements?page=${stockMovementsPage}&page_size=25&period=${period}&movement_type=${movementType}`;
+  if (drinkId && drinkId !== 'all') {
+    url += `&drink_id=${drinkId}`;
+  }
+
+  try {
+    const result = await api(url);
+    const body = $('stockMovementsBody');
+    if (!body) return;
+    body.replaceChildren();
+
+    for (const mov of result.items) {
+      const row = node('tr');
+
+      let typeBadgeClass = 'valid';
+      let typeName = 'Entrada 📥';
+      let qtyDisplay = `+${mov.quantity}`;
+      if (mov.movement_type === 'venda') {
+        typeBadgeClass = 'revoked';
+        typeName = 'Venda Bar 🛒';
+        qtyDisplay = `${mov.quantity}`;
+      } else if (mov.movement_type === 'ajuste') {
+        typeBadgeClass = 'used';
+        typeName = 'Ajuste ⚖️';
+        qtyDisplay = mov.quantity > 0 ? `+${mov.quantity}` : `${mov.quantity}`;
+      }
+
+      const typeBadge = node('span', `badge ${typeBadgeClass}`, typeName);
+      const typeCell = node('td');
+      typeCell.append(typeBadge);
+
+      row.append(
+        node('td', '', formatDateTime(mov.created_at)),
+        node('td', '', `${mov.drink_name || 'Bebida'} (${mov.dosage || ''})`),
+        typeCell,
+        node('td', '', qtyDisplay),
+        node('td', '', `${mov.previous_stock} ➔ ${mov.new_stock}`),
+        node('td', '', mov.reason || '—'),
+        node('td', '', mov.operator_username || 'Sistema')
+      );
+      body.append(row);
+    }
+
+    if (!result.items.length) {
+      const row = node('tr');
+      const cell = node('td', '', 'Nenhuma movimentação de estoque encontrada para os filtros selecionados.');
+      cell.colSpan = 7;
+      row.append(cell);
+      body.append(row);
+    }
+
+    renderPager('stockMovements', result);
+  } catch (err) {
+    notice(`Erro ao carregar movimentações: ${err.message}`, 'error');
+  }
+}
+
+function openStockEntryModal(drinkId = null) {
+  $('stockEntryModal').style.display = 'block';
+  if (drinkId) {
+    $('stockEntryDrink').value = drinkId;
+  }
+  $('stockEntryQty').focus();
+  $('stockEntryModal').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function openStockAdjustModal(drinkId = null, currentQty = 0) {
+  $('stockAdjustModal').style.display = 'block';
+  if (drinkId) {
+    $('stockAdjustDrink').value = drinkId;
+  }
+  $('stockAdjustQty').value = currentQty;
+  $('stockAdjustQty').focus();
+  $('stockAdjustModal').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function exportStockCsv() {
+  if (!currentStockOverview || !currentStockOverview.items.length) {
+    notice('Nenhum dado de estoque para exportar.', 'error');
+    return;
+  }
+  let csv = 'ID,Bebida,Dosagem,Estoque_Atual,Estoque_Minimo,Status,Preco_Venda,Preco_Custo,Valor_Total_Venda,Valor_Total_Custo\n';
+  for (const it of currentStockOverview.items) {
+    csv += `"${it.id}","${it.name}","${it.dosage}",${it.stock_quantity},${it.min_stock},"${it.status}",${it.price},${it.cost_price || 0},${it.total_sale_value},${it.total_cost_value}\n`;
+  }
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `relatorio-estoque-vibz-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 function addToCart(drink) {
@@ -2205,29 +2664,108 @@ $('drinkForm')?.addEventListener('submit', async (e) => {
   const editId = $('drinkEditId').value;
   const name = $('drinkName').value.trim();
   const price = parseFloat($('drinkPrice').value);
+  const cost_price = parseFloat($('drinkCostPrice')?.value || '0');
   const dosage = $('drinkDosage').value;
+  const stock_quantity = parseInt($('drinkStock')?.value || '50', 10);
+  const min_stock = parseInt($('drinkMinStock')?.value || '10', 10);
 
   try {
     if (editId) {
       await api(`bar/drinks/${editId}`, {
         method: 'PATCH',
-        body: { name, price, dosage }
+        body: { name, price, cost_price, dosage, stock_quantity, min_stock }
       });
       notice(`Bebida "${name}" atualizada com sucesso!`, 'success');
     } else {
       await api('bar/drinks', {
         method: 'POST',
-        body: { name, price, dosage }
+        body: { name, price, cost_price, dosage, initial_stock: stock_quantity, min_stock }
       });
       notice(`Bebida "${name}" cadastrada com sucesso!`, 'success');
     }
     resetDrinkForm();
     await refreshBarMenu();
+    if (!$('stockTab').hidden) await refreshStock();
   } catch (err) {
     notice(err.message, 'error');
   }
 });
 $('cancelEditDrinkBtn')?.addEventListener('click', resetDrinkForm);
+$('cancelEditDrinkBannerBtn')?.addEventListener('click', resetDrinkForm);
+
+$('stockEntryForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const drink_id = parseInt($('stockEntryDrink').value, 10);
+  const quantity = parseInt($('stockEntryQty').value, 10);
+  const unit_cost = parseFloat($('stockEntryCost').value || '0');
+  const reason = $('stockEntryReason').value.trim();
+
+  try {
+    await api('stock/entry', {
+      method: 'POST',
+      body: { drink_id, quantity, unit_cost, reason }
+    });
+    notice('Entrada de estoque confirmada com sucesso!', 'success');
+    $('stockEntryForm').reset();
+    $('stockEntryModal').style.display = 'none';
+    await refreshStock();
+    await refreshBarMenu();
+  } catch (err) {
+    notice(err.message, 'error');
+  }
+});
+
+$('stockAdjustForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const drink_id = parseInt($('stockAdjustDrink').value, 10);
+  const new_quantity = parseInt($('stockAdjustQty').value, 10);
+  const reason = $('stockAdjustReason').value.trim();
+
+  try {
+    await api('stock/adjust', {
+      method: 'POST',
+      body: { drink_id, new_quantity, reason }
+    });
+    notice('Ajuste de inventário salvo com sucesso!', 'success');
+    $('stockAdjustForm').reset();
+    $('stockAdjustModal').style.display = 'none';
+    await refreshStock();
+    await refreshBarMenu();
+  } catch (err) {
+    notice(err.message, 'error');
+  }
+});
+
+$('stockSubTabOverview')?.addEventListener('click', () => {
+  $('stockOverviewView').hidden = false;
+  $('stockMovementsView').hidden = true;
+  $('stockSubTabOverview').classList.add('primary');
+  $('stockSubTabMovements').classList.remove('primary');
+});
+
+$('stockSubTabMovements')?.addEventListener('click', () => {
+  $('stockOverviewView').hidden = true;
+  $('stockMovementsView').hidden = false;
+  $('stockSubTabMovements').classList.add('primary');
+  $('stockSubTabOverview').classList.remove('primary');
+  refreshStockMovements();
+});
+
+$('openStockEntryBtn')?.addEventListener('click', () => openStockEntryModal());
+$('closeStockEntryBtn')?.addEventListener('click', () => { $('stockEntryModal').style.display = 'none'; });
+$('openStockAdjustBtn')?.addEventListener('click', () => openStockAdjustModal());
+$('closeStockAdjustBtn')?.addEventListener('click', () => { $('stockAdjustModal').style.display = 'none'; });
+$('exportStockCsvBtn')?.addEventListener('click', exportStockCsv);
+$('printStockBtn')?.addEventListener('click', () => window.print());
+$('refreshStockBtn')?.addEventListener('click', () => refreshStock());
+$('stockFilterApplyBtn')?.addEventListener('click', () => { stockMovementsPage = 1; refreshStockMovements(); });
+$('stockMovementsPrev')?.addEventListener('click', () => { stockMovementsPage--; refreshStockMovements(); });
+$('stockMovementsNext')?.addEventListener('click', () => { stockMovementsPage++; refreshStockMovements(); });
+
+$('goToBarFromMenuBtn')?.addEventListener('click', () => switchTab('bar'));
+$('goToStockFromMenuBtn')?.addEventListener('click', () => switchTab('stock'));
+$('refreshMenuBtn')?.addEventListener('click', () => refreshBarMenu());
+$('menuSearchInput')?.addEventListener('input', () => renderDrinksTable());
 
 $('clientConsumptionSearchBtn')?.addEventListener('click', () => {
   consumptionPage = 1;

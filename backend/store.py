@@ -159,22 +159,49 @@ class Store:
                     subtotal REAL NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS bar_order_items_order_idx ON bar_order_items(order_id);
+                CREATE TABLE IF NOT EXISTS stock_movements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    drink_id INTEGER NOT NULL REFERENCES drinks(id) ON DELETE CASCADE,
+                    movement_type TEXT NOT NULL CHECK(movement_type IN ('entrada', 'saida', 'ajuste', 'venda')),
+                    quantity INTEGER NOT NULL,
+                    previous_stock INTEGER NOT NULL,
+                    new_stock INTEGER NOT NULL,
+                    unit_cost REAL DEFAULT 0.0,
+                    reason TEXT,
+                    reference_order_id INTEGER REFERENCES bar_orders(id) ON DELETE SET NULL,
+                    operator_id TEXT,
+                    operator_username TEXT,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS stock_movements_drink_idx ON stock_movements(drink_id);
+                CREATE INDEX IF NOT EXISTS stock_movements_created_idx ON stock_movements(created_at);
+                CREATE INDEX IF NOT EXISTS stock_movements_type_idx ON stock_movements(movement_type);
             """)
+
+            # Migração de colunas na tabela drinks
+            drink_cols = [r[1] for r in db.execute("PRAGMA table_info(drinks)").fetchall()]
+            if "stock_quantity" not in drink_cols:
+                db.execute("ALTER TABLE drinks ADD COLUMN stock_quantity INTEGER NOT NULL DEFAULT 50")
+            if "min_stock" not in drink_cols:
+                db.execute("ALTER TABLE drinks ADD COLUMN min_stock INTEGER NOT NULL DEFAULT 10")
+            if "cost_price" not in drink_cols:
+                db.execute("ALTER TABLE drinks ADD COLUMN cost_price REAL NOT NULL DEFAULT 0.0")
+
             if db.execute("SELECT COUNT(*) FROM drinks").fetchone()[0] == 0:
                 initial_drinks = [
-                    ("Gin Tropical", 35.0, "dose"),
-                    ("Caipirinha Tradicional", 25.0, "dose"),
-                    ("Cerveja Long Neck", 18.0, "garrafa"),
-                    ("Whisky Red Label", 30.0, "dose"),
-                    ("Garrafa Vodka Absolut", 280.0, "garrafa"),
-                    ("Garrafa Gin Tanqueray", 320.0, "garrafa"),
-                    ("Energético Red Bull", 20.0, "lata"),
-                    ("Água Mineral", 8.0, "garrafa"),
+                    ("Gin Tropical", 35.0, "dose", 8.0, 50, 10),
+                    ("Caipirinha Tradicional", 25.0, "dose", 5.0, 60, 15),
+                    ("Cerveja Long Neck", 18.0, "garrafa", 6.0, 120, 24),
+                    ("Whisky Red Label", 30.0, "dose", 9.0, 40, 10),
+                    ("Garrafa Vodka Absolut", 280.0, "garrafa", 85.0, 15, 5),
+                    ("Garrafa Gin Tanqueray", 320.0, "garrafa", 110.0, 12, 4),
+                    ("Energético Red Bull", 20.0, "lata", 7.0, 80, 20),
+                    ("Água Mineral", 8.0, "garrafa", 1.5, 100, 24),
                 ]
                 now = utc_now()
                 db.executemany(
-                    "INSERT INTO drinks(name, price, dosage, active, created_at) VALUES (?, ?, ?, 1, ?)",
-                    [(name, price, dosage, now) for name, price, dosage in initial_drinks],
+                    "INSERT INTO drinks(name, price, dosage, cost_price, stock_quantity, min_stock, active, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+                    [(name, price, dosage, cost, stock, min_st, now) for name, price, dosage, cost, stock, min_st in initial_drinks],
                 )
 
             # Migração de roles na tabela users se necessário
@@ -521,6 +548,69 @@ class Store:
         finally:
             db.close()
 
+    def update_user(self, user_id: int, changes: dict) -> dict:
+        with closing(self._connect()) as db:
+            row = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+            if not row:
+                raise StoreError("Usuário não encontrado", 404)
+            current = dict(row)
+
+            if "role" in changes:
+                new_role = changes["role"]
+                if new_role not in {"admin", "operator", "portaria", "bar"}:
+                    raise StoreError("Papel inválido")
+                if current["role"] == "admin" and new_role != "admin":
+                    admin_count = db.execute(
+                        "SELECT COUNT(*) FROM users WHERE role='admin' AND active=1 AND id!=?", (user_id,)
+                    ).fetchone()[0]
+                    if admin_count == 0:
+                        raise StoreError("Não é possível alterar o perfil do único administrador ativo")
+
+            if "active" in changes and int(changes["active"]) == 0:
+                if current["role"] == "admin":
+                    admin_count = db.execute(
+                        "SELECT COUNT(*) FROM users WHERE role='admin' AND active=1 AND id!=?", (user_id,)
+                    ).fetchone()[0]
+                    if admin_count == 0:
+                        raise StoreError("Não é possível desativar o único administrador ativo")
+
+            sets = []
+            params = []
+            for k in ("role", "password_hash", "active"):
+                if k in changes and changes[k] is not None:
+                    sets.append(f"{k}=?")
+                    params.append(changes[k])
+
+            if sets:
+                params.append(user_id)
+                db.execute(f"UPDATE users SET {','.join(sets)} WHERE id=?", tuple(params))
+                if "password_hash" in changes or changes.get("active") == 0:
+                    db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+                db.commit()
+
+            updated = db.execute("SELECT id, username, role, active, created_at FROM users WHERE id=?", (user_id,)).fetchone()
+            return dict(updated)
+
+    def delete_user(self, user_id: int, operator_id: int) -> dict:
+        if user_id == operator_id:
+            raise StoreError("Você não pode excluir sua própria conta")
+        with closing(self._connect()) as db:
+            row = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+            if not row:
+                raise StoreError("Usuário não encontrado", 404)
+            user = dict(row)
+            if user["role"] == "admin":
+                admin_count = db.execute(
+                    "SELECT COUNT(*) FROM users WHERE role='admin' AND active=1 AND id!=?", (user_id,)
+                ).fetchone()[0]
+                if admin_count == 0:
+                    raise StoreError("Não é possível excluir o único administrador ativo")
+
+            db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+            db.execute("DELETE FROM users WHERE id=?", (user_id,))
+            db.commit()
+            return {"id": user_id, "username": user["username"]}
+
     def create_session(self, user_id: int, token_hash: str, csrf_token: str, lifetime: int) -> None:
         now = int(time.time())
         with closing(self._connect()) as db:
@@ -712,7 +802,7 @@ class Store:
             row = db.execute("SELECT * FROM drinks WHERE id=?", (drink_id,)).fetchone()
             return dict(row) if row else None
 
-    def create_drink(self, name: str, price: float, dosage: str) -> dict:
+    def create_drink(self, name: str, price: float, dosage: str, cost_price: float = 0.0, initial_stock: int = 50, min_stock: int = 10, operator_id: str = "", operator_username: str = "") -> dict:
         name = (name or "").strip()
         if not name:
             raise StoreError("Nome da bebida é obrigatório")
@@ -722,52 +812,115 @@ class Store:
             raise StoreError("Valor da bebida inválido")
         if price <= 0:
             raise StoreError("Valor da bebida deve ser maior que zero")
+        try:
+            cost_price = max(0.0, round(float(cost_price or 0.0), 2))
+        except (ValueError, TypeError):
+            cost_price = 0.0
+        try:
+            initial_stock = max(0, int(initial_stock if initial_stock is not None else 50))
+        except (ValueError, TypeError):
+            initial_stock = 0
+        try:
+            min_stock = max(0, int(min_stock if min_stock is not None else 10))
+        except (ValueError, TypeError):
+            min_stock = 10
         dosage = (dosage or "").lower().strip()
         if dosage not in {"dose", "garrafa", "lata", "unidade"}:
             raise StoreError("Dosagem deve ser 'dose', 'garrafa', 'lata' ou 'unidade'")
         now = utc_now()
         with closing(self._connect()) as db:
             cur = db.execute(
-                "INSERT INTO drinks(name, price, dosage, active, created_at) VALUES (?, ?, ?, 1, ?)",
-                (name, price, dosage, now),
+                "INSERT INTO drinks(name, price, cost_price, dosage, stock_quantity, min_stock, active, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+                (name, price, cost_price, dosage, initial_stock, min_stock, now),
             )
+            drink_id = cur.lastrowid
+            if initial_stock > 0:
+                db.execute(
+                    """INSERT INTO stock_movements(
+                        drink_id, movement_type, quantity, previous_stock, new_stock, unit_cost, reason, operator_id, operator_username, created_at
+                    ) VALUES (?, 'entrada', ?, 0, ?, ?, 'Estoque inicial de cadastro', ?, ?, ?)""",
+                    (drink_id, initial_stock, initial_stock, cost_price, operator_id, operator_username, now),
+                )
             db.commit()
-            return {"id": cur.lastrowid, "name": name, "price": price, "dosage": dosage, "active": 1, "created_at": now}
+            return {
+                "id": drink_id,
+                "name": name,
+                "price": price,
+                "cost_price": cost_price,
+                "dosage": dosage,
+                "stock_quantity": initial_stock,
+                "min_stock": min_stock,
+                "active": 1,
+                "created_at": now
+            }
 
-    def update_drink(self, drink_id: int, changes: dict) -> dict:
-        valid_fields = {"name", "price", "dosage", "active"}
+    def update_drink(self, drink_id: int, changes: dict, operator_id: str = "", operator_username: str = "") -> dict:
+        valid_fields = {"name", "price", "cost_price", "dosage", "stock_quantity", "min_stock", "active"}
         set_parts = []
         params = []
-        for key, val in changes.items():
-            if key not in valid_fields:
-                continue
-            if key == "name":
-                val = (val or "").strip()
-                if not val:
-                    raise StoreError("Nome não pode ser vazio")
-            elif key == "price":
-                try:
-                    val = round(float(val), 2)
-                except (ValueError, TypeError):
-                    raise StoreError("Valor inválido")
-                if val <= 0:
-                    raise StoreError("Valor deve ser maior que zero")
-            elif key == "dosage":
-                val = str(val).lower().strip()
-                if val not in {"dose", "garrafa", "lata", "unidade"}:
-                    raise StoreError("Dosagem deve ser 'dose', 'garrafa', 'lata' ou 'unidade'")
-            elif key == "active":
-                val = 1 if val else 0
-            set_parts.append(f"{key} = ?")
-            params.append(val)
-        if not set_parts:
-            raise StoreError("Nenhum dado informado para alteração")
+        stock_change = None
+
         with closing(self._connect()) as db:
+            current_drink = db.execute("SELECT * FROM drinks WHERE id=?", (drink_id,)).fetchone()
+            if not current_drink:
+                raise StoreError("Bebida não encontrada", 404)
+            current_drink = dict(current_drink)
+
+            for key, val in changes.items():
+                if key not in valid_fields:
+                    continue
+                if key == "name":
+                    val = (val or "").strip()
+                    if not val:
+                        raise StoreError("Nome não pode ser vazio")
+                elif key == "price":
+                    try:
+                        val = round(float(val), 2)
+                    except (ValueError, TypeError):
+                        raise StoreError("Valor inválido")
+                    if val <= 0:
+                        raise StoreError("Valor deve ser maior que zero")
+                elif key == "cost_price":
+                    try:
+                        val = max(0.0, round(float(val or 0.0), 2))
+                    except (ValueError, TypeError):
+                        val = 0.0
+                elif key == "min_stock":
+                    try:
+                        val = max(0, int(val or 0))
+                    except (ValueError, TypeError):
+                        val = 0
+                elif key == "stock_quantity":
+                    try:
+                        val = max(0, int(val or 0))
+                    except (ValueError, TypeError):
+                        raise StoreError("Quantidade de estoque inválida")
+                    if val != current_drink["stock_quantity"]:
+                        stock_change = (current_drink["stock_quantity"], val)
+                elif key == "dosage":
+                    val = str(val).lower().strip()
+                    if val not in {"dose", "garrafa", "lata", "unidade"}:
+                        raise StoreError("Dosagem deve ser 'dose', 'garrafa', 'lata' ou 'unidade'")
+                elif key == "active":
+                    val = 1 if val else 0
+                set_parts.append(f"{key} = ?")
+                params.append(val)
+
+            if not set_parts:
+                raise StoreError("Nenhum dado informado para alteração")
+
             params.append(drink_id)
             cur = db.execute(f"UPDATE drinks SET {', '.join(set_parts)} WHERE id=?", tuple(params))
+            if stock_change:
+                prev_st, new_st = stock_change
+                delta = new_st - prev_st
+                db.execute(
+                    """INSERT INTO stock_movements(
+                        drink_id, movement_type, quantity, previous_stock, new_stock, unit_cost, reason, operator_id, operator_username, created_at
+                    ) VALUES (?, 'ajuste', ?, ?, ?, ?, 'Ajuste manual no cadastro', ?, ?, ?)""",
+                    (drink_id, delta, prev_st, new_st, current_drink.get("cost_price", 0.0), operator_id, operator_username, utc_now()),
+                )
             db.commit()
-            if cur.rowcount == 0:
-                raise StoreError("Bebida não encontrada", 404)
             row = db.execute("SELECT * FROM drinks WHERE id=?", (drink_id,)).fetchone()
             return dict(row)
 
@@ -782,6 +935,173 @@ class Store:
             if cur.rowcount == 0:
                 raise StoreError("Bebida não encontrada", 404)
             return True
+
+    def add_stock_entry(self, drink_id: int, quantity: int, unit_cost: float = 0.0, reason: str = "", operator_id: str = "", operator_username: str = "") -> dict:
+        if quantity <= 0:
+            raise StoreError("Quantidade de entrada deve ser maior que zero")
+        try:
+            unit_cost = max(0.0, round(float(unit_cost or 0.0), 2))
+        except (ValueError, TypeError):
+            unit_cost = 0.0
+        reason = (reason or "").strip() or "Entrada de estoque"
+        now = utc_now()
+        with closing(self._connect()) as db:
+            drink = db.execute("SELECT * FROM drinks WHERE id=?", (drink_id,)).fetchone()
+            if not drink:
+                raise StoreError("Bebida não encontrada", 404)
+            drink = dict(drink)
+            prev_stock = drink["stock_quantity"]
+            new_stock = prev_stock + quantity
+
+            if unit_cost > 0:
+                db.execute("UPDATE drinks SET stock_quantity = ?, cost_price = ? WHERE id = ?", (new_stock, unit_cost, drink_id))
+            else:
+                db.execute("UPDATE drinks SET stock_quantity = ? WHERE id = ?", (new_stock, drink_id))
+
+            cur = db.execute(
+                """INSERT INTO stock_movements(
+                    drink_id, movement_type, quantity, previous_stock, new_stock, unit_cost, reason, operator_id, operator_username, created_at
+                ) VALUES (?, 'entrada', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (drink_id, quantity, prev_stock, new_stock, unit_cost, reason, operator_id, operator_username, now),
+            )
+            db.commit()
+            return {
+                "movement_id": cur.lastrowid,
+                "drink_id": drink_id,
+                "drink_name": drink["name"],
+                "quantity": quantity,
+                "previous_stock": prev_stock,
+                "new_stock": new_stock,
+                "unit_cost": unit_cost,
+                "reason": reason,
+                "created_at": now
+            }
+
+    def adjust_stock(self, drink_id: int, new_quantity: int, reason: str = "", operator_id: str = "", operator_username: str = "") -> dict:
+        if new_quantity < 0:
+            raise StoreError("A quantidade não pode ser negativa")
+        reason = (reason or "").strip() or "Ajuste de inventário"
+        now = utc_now()
+        with closing(self._connect()) as db:
+            drink = db.execute("SELECT * FROM drinks WHERE id=?", (drink_id,)).fetchone()
+            if not drink:
+                raise StoreError("Bebida não encontrada", 404)
+            drink = dict(drink)
+            prev_stock = drink["stock_quantity"]
+            delta = new_quantity - prev_stock
+
+            db.execute("UPDATE drinks SET stock_quantity = ? WHERE id = ?", (new_quantity, drink_id))
+            cur = db.execute(
+                """INSERT INTO stock_movements(
+                    drink_id, movement_type, quantity, previous_stock, new_stock, unit_cost, reason, operator_id, operator_username, created_at
+                ) VALUES (?, 'ajuste', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (drink_id, delta, prev_stock, new_quantity, drink["cost_price"], reason, operator_id, operator_username, now),
+            )
+            db.commit()
+            return {
+                "movement_id": cur.lastrowid,
+                "drink_id": drink_id,
+                "drink_name": drink["name"],
+                "delta": delta,
+                "previous_stock": prev_stock,
+                "new_stock": new_quantity,
+                "reason": reason,
+                "created_at": now
+            }
+
+    def stock_overview_report(self) -> dict:
+        with closing(self._connect()) as db:
+            drinks_rows = db.execute("""
+                SELECT id, name, price, cost_price, dosage, stock_quantity, min_stock, active, created_at
+                FROM drinks
+                ORDER BY active DESC, 
+                         CASE WHEN stock_quantity <= 0 THEN 0 WHEN stock_quantity <= min_stock THEN 1 ELSE 2 END,
+                         name COLLATE NOCASE ASC
+            """).fetchall()
+
+            items = []
+            total_items = 0
+            low_stock_count = 0
+            out_of_stock_count = 0
+            total_sale_value = 0.0
+            total_cost_value = 0.0
+
+            for r in drinks_rows:
+                d = dict(r)
+                stock = d["stock_quantity"]
+                min_st = d["min_stock"]
+                if stock <= 0:
+                    status = "zerado"
+                    out_of_stock_count += 1
+                elif stock <= min_st:
+                    status = "baixo"
+                    low_stock_count += 1
+                else:
+                    status = "normal"
+
+                item_sale_val = round(stock * d["price"], 2)
+                item_cost_val = round(stock * d["cost_price"], 2)
+                d["status"] = status
+                d["total_sale_value"] = item_sale_val
+                d["total_cost_value"] = item_cost_val
+                items.append(d)
+
+                if d["active"]:
+                    total_items += max(0, stock)
+                    total_sale_value += max(0.0, item_sale_val)
+                    total_cost_value += max(0.0, item_cost_val)
+
+            return {
+                "kpis": {
+                    "total_stock_items": total_items,
+                    "total_drinks_count": len([i for i in items if i["active"]]),
+                    "low_stock_count": low_stock_count,
+                    "out_of_stock_count": out_of_stock_count,
+                    "total_sale_value": round(total_sale_value, 2),
+                    "total_cost_value": round(total_cost_value, 2),
+                },
+                "items": items,
+            }
+
+    def stock_movements_report(self, page: int = 1, page_size: int = 25, drink_id: int | None = None, movement_type: str | None = None, period: str = "30") -> dict:
+        where_clauses = []
+        params = []
+
+        if drink_id:
+            where_clauses.append("sm.drink_id = ?")
+            params.append(drink_id)
+
+        if movement_type and movement_type != "all":
+            where_clauses.append("sm.movement_type = ?")
+            params.append(movement_type)
+
+        if period and period != "365":
+            if period == "today":
+                start = f"{local_today().isoformat()}T00:00:00"
+            else:
+                days = int(period)
+                start = f"{(local_today() - timedelta(days=days)).isoformat()}T00:00:00"
+            where_clauses.append("sm.created_at >= ?")
+            params.append(start)
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        with closing(self._connect()) as db:
+            count_query = f"SELECT COUNT(*) FROM stock_movements sm {where_sql}"
+            total = db.execute(count_query, tuple(params)).fetchone()[0]
+
+            query = f"""
+                SELECT sm.*, d.name AS drink_name, d.dosage, d.price AS drink_price
+                FROM stock_movements sm
+                LEFT JOIN drinks d ON sm.drink_id = d.id
+                {where_sql}
+                ORDER BY sm.id DESC
+                LIMIT ? OFFSET ?
+            """
+            rows = db.execute(query, tuple(params + [page_size, (page - 1) * page_size])).fetchall()
+            items = [dict(r) for r in rows]
+
+        return self._page(items, total, page, page_size)
 
     def find_card_any(self, identifier: str, public_base_url: str = "") -> dict:
         raw = (identifier or "").strip()
@@ -876,6 +1196,16 @@ class Store:
                         """INSERT INTO bar_order_items(order_id, drink_id, drink_name, dosage, unit_price, quantity, subtotal)
                            VALUES (?, ?, ?, ?, ?, ?, ?)""",
                         (order_id, item["drink_id"], item["drink_name"], item["dosage"], item["unit_price"], item["quantity"], item["subtotal"]),
+                    )
+                    curr_st = db.execute("SELECT stock_quantity FROM drinks WHERE id=?", (item["drink_id"],)).fetchone()
+                    prev_stock = curr_st[0] if curr_st else 0
+                    new_stock = prev_stock - item["quantity"]
+                    db.execute("UPDATE drinks SET stock_quantity = ? WHERE id = ?", (new_stock, item["drink_id"]))
+                    db.execute(
+                        """INSERT INTO stock_movements(
+                            drink_id, movement_type, quantity, previous_stock, new_stock, unit_cost, reason, reference_order_id, operator_id, operator_username, created_at
+                        ) VALUES (?, 'venda', ?, ?, ?, 0.0, ?, ?, ?, ?, ?)""",
+                        (item["drink_id"], -item["quantity"], prev_stock, new_stock, f"Venda Bar #{order_id} (Cartão {card['number']})", order_id, str(operator_uid), operator_username, now),
                     )
                 db.commit()
                 return {
