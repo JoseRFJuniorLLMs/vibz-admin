@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#0b0b12">
   <meta name="robots" content="noindex,nofollow">
-  <link rel="stylesheet" href="../static/admin.css?v=20260930-v5-reports">
+  <link rel="stylesheet" href="../static/admin.css?v=20261002-v6-fixes">
   <script src="../static/vendor/jsQR.js" defer></script>
-  <script type="module" src="../static/admin.js?v=20260930-v5-reports"></script>
+  <script type="module" src="../static/admin.js?v=20261002-v6-fixes"></script>
 </head>
 <body>
   <header class="topbar">
@@ -65,7 +65,16 @@
       <section id="issueTab" class="tab-panel" hidden>
         <div class="panel-head"><div><h2>Gerar cartões sequenciais</h2><p>Cada cartão recebe número próprio e QR impossível de adivinhar.</p></div></div>
         <form id="issueForm" class="panel form-grid admin-only">
-          <label>Origem<input id="originSearch" type="search" placeholder="Busque pelo nome do local" autocomplete="off"><select id="issueOrigin" aria-describedby="originHelp originSelectedInfo" required><option value="">Carregando origens...</option></select><small id="originSelectedInfo"></small></label>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <label for="issueOrigin" style="font-weight:700;font-size:13px;color:#e8e3eb">Origem do lote</label>
+            <input id="originSearch" type="search" placeholder="🔍 Filtrar origens e estabelecimentos..." autocomplete="off">
+            <select id="issueOrigin" aria-describedby="originHelp originSelectedInfo" required><option value="">Carregando origens...</option></select>
+            <small id="originSelectedInfo"></small>
+            <div id="quickOriginSection" style="margin-top:4px" hidden>
+              <span style="font-size:11px;color:#ff9e73;font-weight:700">Origens prontas para emissão:</span>
+              <div id="quickOriginPills" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px"></div>
+            </div>
+          </div>
           <label>Quantidade (1 a 100)<input id="issueCount" type="number" min="1" max="100" value="1" required></label>
           <label>Válido até (opcional)<input id="issueExpiry" type="date"></label>
           <button id="issueSubmitBtn" type="submit" class="primary">Gerar lote</button>
@@ -276,7 +285,10 @@
           <label>Tipo de origem<select id="originCategory" required><option value="">Selecione</option><option>Hotel / Pousada</option><option>Hostel</option><option>Restaurante / Bar</option><option>Agência / Passeio</option><option>Rodoviária</option><option>Distribuição de rua</option><option>Outro</option></select></label>
           <button type="submit" class="primary">Cadastrar origem</button>
         </form>
-        <div id="originList" class="origin-list"></div>
+        <div style="margin-top:24px">
+          <div class="panel-head"><div><h3>Origens e parceiros cadastrados</h3><p>Clique em "Gerar cartões" em qualquer origem para emitir um lote imediatamente.</p></div></div>
+          <div id="originList" class="origin-list"></div>
+        </div>
         <div class="pager"><button id="originsPrev" type="button">Anterior</button><span id="originsPage"></span><button id="originsNext" type="button">Próxima</button></div>
       </section>
 

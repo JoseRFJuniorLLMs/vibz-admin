@@ -38,7 +38,7 @@ class ApiTests(unittest.TestCase):
         admin_page = self.client.get("/admin/")
         self.assertEqual(admin_page.status_code, 200)
         self.assertEqual(admin_page.headers["cache-control"], "no-store")
-        self.assertIn("admin.js?v=20260930-v5-reports", admin_page.text)
+        self.assertIn("admin.js?v=20261002-v6-fixes", admin_page.text)
         self.assertEqual(self.client.get("/static/admin.js").headers["cache-control"], "no-store")
 
     def test_login_csrf_roles_and_redeem(self):
@@ -65,6 +65,19 @@ class ApiTests(unittest.TestCase):
         redeemed = self.client.post(f"/api/cards/{first['token']}/redeem", json={"wristband": "0387"}, headers={"X-CSRF-Token": operator_csrf})
         self.assertEqual(redeemed.status_code, 200, redeemed.text)
         self.assertEqual(redeemed.json()["status"], "redeemed")
+        self.assertEqual(redeemed.json()["redeemed_by_username"], "portaria")
+
+        redeemed_no_wristband = self.client.post(f"/api/cards/{second['token']}/redeem", json={"wristband": ""}, headers={"X-CSRF-Token": operator_csrf})
+        self.assertEqual(redeemed_no_wristband.status_code, 200, redeemed_no_wristband.text)
+        self.assertEqual(redeemed_no_wristband.json()["status"], "redeemed")
+        self.assertEqual(redeemed_no_wristband.json()["wristband"], "")
+        self.assertEqual(redeemed_no_wristband.json()["redeemed_by_username"], "portaria")
+
+        scanned = self.client.get("/api/cards?status=redeemed")
+        self.assertEqual(scanned.status_code, 200)
+        self.assertEqual(scanned.json()["total"], 2)
+        self.assertEqual(scanned.json()["items"][0]["redeemed_by_username"], "portaria")
+
         duplicate = self.client.post(f"/api/cards/{first['token']}/redeem", json={"wristband": "0388"}, headers={"X-CSRF-Token": operator_csrf})
         self.assertEqual(duplicate.status_code, 409)
 

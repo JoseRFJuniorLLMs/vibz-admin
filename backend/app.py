@@ -74,7 +74,7 @@ class LookupInput(BaseModel):
 
 
 class RedeemInput(BaseModel):
-    wristband: str = Field(min_length=1, max_length=32)
+    wristband: str = Field(default="", max_length=32)
 
 
 class ExportInput(BaseModel):

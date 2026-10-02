@@ -16,6 +16,21 @@ let scanActive = false;
 let scanBusy = false;
 let lastFrame = 0;
 let detectorSupported = 'BarcodeDetector' in window;
+let scannedInterval = null;
+
+function normalizeStr(str) {
+  return (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+
+function formatDateTime(value) {
+  if (!value) return '—';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString('pt-BR', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+}
 
 function node(tag, className = '', text = '') {
   const result = document.createElement(tag);
@@ -69,13 +84,17 @@ async function showLoggedIn(data) {
   });
   $('issueOperatorNote').hidden = data.role === 'admin';
   switchTab('scan');
-  const loads = await Promise.allSettled([refreshOrigins(), refreshCards()]);
+  const loads = await Promise.allSettled([refreshOrigins(), refreshCards(), refreshScannedCards()]);
   for (const result of loads) {
     if (result.status === 'rejected') notice(result.reason.message, 'error');
   }
 }
 
 function switchTab(name) {
+  if (scannedInterval) {
+    clearInterval(scannedInterval);
+    scannedInterval = null;
+  }
   for (const button of document.querySelectorAll('.tab')) {
     button.classList.toggle('active', button.dataset.tab === name);
   }
@@ -85,7 +104,15 @@ function switchTab(name) {
   if (name !== 'scan') stopCamera();
   if (name === 'issue') refreshOriginChoices().catch((error) => notice(error.message, 'error'));
   if (name === 'cards') refreshCards().catch((error) => notice(error.message, 'error'));
-  if (name === 'scanned') refreshScannedCards().catch((error) => notice(error.message, 'error'));
+  if (name === 'scanned') {
+    scannedPage = 1;
+    refreshScannedCards().catch((error) => notice(error.message, 'error'));
+    scannedInterval = setInterval(() => {
+      if (!$('scannedTab').hidden) {
+        refreshScannedCards().catch(() => {});
+      }
+    }, 15000);
+  }
   if (name === 'reports') refreshReports().catch((error) => notice(error.message, 'error'));
   if (name === 'origins') refreshOrigins().catch((error) => notice(error.message, 'error'));
   if (name === 'partners') refreshPartners().catch((error) => notice(error.message, 'error'));
@@ -125,32 +152,33 @@ async function refreshUsers() {
 function renderOriginChoices() {
   const select = $('issueOrigin');
   const selected = select.value;
-  const query = $('originSearch').value.trim().toLocaleLowerCase('pt-BR');
-  const matches = origins.filter((o) => !query || o.name.toLocaleLowerCase('pt-BR').includes(query));
+  const rawQuery = $('originSearch').value;
+  const query = normalizeStr(rawQuery);
+  const matches = origins.filter((o) => !query || normalizeStr(o.name).includes(query) || normalizeStr(o.category).includes(query));
 
   const placeholder = node('option', '', matches.length ? 'Selecione uma origem ou parceiro' : 'Nenhum local encontrado');
   placeholder.value = '';
 
   const registeredGroup = node('optgroup');
-  registeredGroup.label = 'Origens cadastradas';
+  registeredGroup.label = 'Origens cadastradas (Prontas para emissão)';
 
   const confirmedGroup = node('optgroup');
-  confirmedGroup.label = 'Parceiros contratados — prontos para emissão';
+  confirmedGroup.label = 'Parceiros contratados (Prontos para emissão)';
 
   const prospectGroup = node('optgroup');
   prospectGroup.label = 'Demais estabelecimentos — requer contratação prévia';
 
   for (const origin of matches) {
     if (origin.source === 'origin') {
-      const opt = node('option', '', `${origin.name} — ${origin.category}`);
+      const opt = node('option', '', `✓ ${origin.name} — ${origin.category}`);
       opt.value = origin.id;
       registeredGroup.append(opt);
     } else if (origin.status === 'parceiro') {
-      const opt = node('option', '', `${origin.name} — ${categoryLabels[origin.category]} · Contratado`);
+      const opt = node('option', '', `✓ ${origin.name} — ${categoryLabels[origin.category] || origin.category} · Contratado`);
       opt.value = origin.id;
       confirmedGroup.append(opt);
     } else {
-      const opt = node('option', '', `${origin.name} — ${categoryLabels[origin.category]} · ${partnerStatusLabels[origin.status] || 'Pendente'}`);
+      const opt = node('option', '', `${origin.name} — ${categoryLabels[origin.category] || origin.category} · ${partnerStatusLabels[origin.status] || 'Pendente'}`);
       opt.value = origin.id;
       prospectGroup.append(opt);
     }
@@ -161,11 +189,59 @@ function renderOriginChoices() {
   if (confirmedGroup.children.length) select.append(confirmedGroup);
   if (prospectGroup.children.length) select.append(prospectGroup);
 
-  select.value = matches.some((o) => o.id === selected) ? selected : '';
+  if (selected && matches.some((o) => o.id === selected)) {
+    select.value = selected;
+  } else if (query && matches.length === 1) {
+    select.value = matches[0].id;
+  } else {
+    select.value = '';
+  }
   renderSelectedOrigin();
+  renderQuickOriginPills();
 
   const totalContracted = origins.filter((o) => o.source === 'origin' || o.status === 'parceiro').length;
-  $('originHelp').textContent = `${totalContracted} local(is) contratado(s) prontos para emissão. Estabelecimentos pendentes podem ser contratados em 1 clique.`;
+  $('originHelp').textContent = `${totalContracted} local(is) cadastrado(s)/contratado(s) prontos para emissão imediata.`;
+}
+
+function renderQuickOriginPills() {
+  const container = $('quickOriginPills');
+  const section = $('quickOriginSection');
+  if (!container || !section) return;
+  const readyOrigins = origins.filter((o) => o.source === 'origin' || o.status === 'parceiro');
+  if (!readyOrigins.length) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  container.replaceChildren();
+  for (const origin of readyOrigins) {
+    const isSelected = $('issueOrigin').value === origin.id;
+    const pill = node('button', isSelected ? 'primary' : '', `📍 ${origin.name}`);
+    pill.type = 'button';
+    pill.style.padding = '4px 9px';
+    pill.style.fontSize = '12px';
+    pill.style.borderRadius = '999px';
+    pill.style.margin = '0';
+    pill.addEventListener('click', () => {
+      selectOriginForIssue(origin.id);
+    });
+    container.append(pill);
+  }
+}
+
+async function selectOriginForIssue(originId) {
+  switchTab('issue');
+  if (!origins || !origins.some((o) => o.id === originId)) {
+    await refreshOriginChoices();
+  }
+  const select = $('issueOrigin');
+  $('originSearch').value = '';
+  renderOriginChoices();
+  select.value = originId;
+  renderSelectedOrigin();
+  renderQuickOriginPills();
+  $('issueCount')?.focus();
+  window.scrollTo({top: $('issueForm').offsetTop - 60, behavior: 'smooth'});
 }
 
 function renderSelectedOrigin() {
@@ -184,15 +260,15 @@ function renderSelectedOrigin() {
   const isContracted = chosen.source === 'origin' || chosen.status === 'parceiro';
 
   $('originSelectedInfo').textContent = chosen.source === 'prospect'
-    ? `${categoryLabels[chosen.category]} · ${partnerStatusLabels[chosen.status] || 'Pendente'}`
-    : `${chosen.category} · Origem cadastrada`;
+    ? `${categoryLabels[chosen.category] || chosen.category} · ${partnerStatusLabels[chosen.status] || 'Pendente'}`
+    : `${chosen.category} · Origem cadastrada pronta para emissão`;
 
   if (opm) {
     opm.hidden = false;
     $('opmName').textContent = chosen.name;
     $('opmCategory').textContent = categoryLabels[chosen.category] || chosen.category;
     const badge = $('opmStatusBadge');
-    badge.textContent = isContracted ? 'Parceiro Contratado' : (partnerStatusLabels[chosen.status] || 'Não contratado');
+    badge.textContent = isContracted ? 'Parceiro Contratado (Pronto)' : (partnerStatusLabels[chosen.status] || 'Não contratado');
     badge.className = `badge ${isContracted ? 'valid' : 'used'}`;
 
     const promoteBtn = $('opmPromoteBtn');
@@ -233,7 +309,28 @@ async function refreshOrigins() {
   list.replaceChildren();
   for (const origin of result.items) {
     const card = node('div', 'origin-card');
-    card.append(node('strong', '', origin.name), node('small', '', origin.category));
+    card.style.display = 'flex';
+    card.style.flexDirection = 'column';
+    card.style.justifyContent = 'space-between';
+    card.style.gap = '12px';
+
+    const info = node('div');
+    const title = node('strong', '', origin.name);
+    title.style.fontSize = '16px';
+    const cat = node('span', 'badge', origin.category);
+    cat.style.marginTop = '6px';
+    cat.style.display = 'inline-block';
+    info.append(title, cat);
+
+    const issueBtn = node('button', 'primary', '🎟️ Gerar cartões para esta origem');
+    issueBtn.type = 'button';
+    issueBtn.style.padding = '8px 12px';
+    issueBtn.style.fontSize = '13px';
+    issueBtn.addEventListener('click', () => {
+      selectOriginForIssue(origin.id);
+    });
+
+    card.append(info, issueBtn);
     list.append(card);
   }
   if (!result.items.length) list.append(node('p', '', 'Nenhuma origem cadastrada.'));
@@ -288,6 +385,28 @@ async function refreshCards() {
     dlBtn.style.fontWeight = '700';
 
     actionWrap.append(action, dlBtn);
+
+    if (card.status === 'issued' && !card.expired) {
+      const redeemBtn = node('button', 'primary', 'Liberar Entrada');
+      redeemBtn.type = 'button';
+      redeemBtn.style.padding = '5px 8px';
+      redeemBtn.style.fontSize = '12px';
+      redeemBtn.addEventListener('click', async () => {
+        const wb = window.prompt(`Confirmar entrada do cartão ${card.number}?\nNúmero da pulseira (opcional):`, '');
+        if (wb === null) return;
+        try {
+          await api(`cards/${encodeURIComponent(card.token)}/redeem`, {
+            method: 'POST', body: {wristband: wb.trim()},
+          });
+          notice(`✓ Cartão ${card.number} liberado com sucesso!`, 'success');
+          await Promise.allSettled([refreshCards(), refreshScannedCards(), refreshReports()]);
+        } catch (err) {
+          notice(err.message, 'error');
+        }
+      });
+      actionWrap.append(redeemBtn);
+    }
+
     const actionCell = node('td');
     actionCell.append(actionWrap);
 
@@ -322,15 +441,14 @@ async function refreshScannedCards() {
     const statusCell = node('td');
     statusCell.append(status);
 
-    const timeStr = card.redeemed_at ? card.redeemed_at.slice(11, 16) : '';
-    const dateFormatted = formatDate(card.redeemed_at) + (timeStr ? ` às ${timeStr}` : '');
+    const dateFormatted = formatDateTime(card.redeemed_at);
 
     row.append(
       node('td', '', card.number),
       node('td', '', card.origin_name || 'VIBZ TOURIST PASS'),
       node('td', '', dateFormatted),
       node('td', '', card.wristband || 'Sem pulseira'),
-      node('td', '', card.redeemed_by || 'Operador'),
+      node('td', '', card.redeemed_by_username || card.redeemed_by || 'Operador'),
       statusCell
     );
     body.append(row);
@@ -436,7 +554,11 @@ function renderCard(card) {
     ['Válido até', card.valid_until || 'Sem prazo definido'],
   ];
   if (card.status === 'redeemed') {
-    fields.push(['Entrada', formatDate(card.redeemed_at)], ['Pulseira', card.wristband || '—']);
+    fields.push(
+      ['Entrada', formatDateTime(card.redeemed_at)],
+      ['Pulseira', card.wristband || 'Sem pulseira'],
+      ['Liberado por', card.redeemed_by_username || card.redeemed_by || 'Operador']
+    );
   }
   for (const [title, value] of fields) {
     const cell = node('div');
@@ -446,13 +568,13 @@ function renderCard(card) {
   panel.append(badge, node('h3', '', card.number), details);
   if (card.status === 'issued' && !card.expired) {
     const form = node('form', 'redeem-form');
-    const label = node('label', '', 'Número da pulseira');
+    const label = node('label', '', 'Número da pulseira (opcional)');
     const input = node('input');
-    input.required = true;
+    input.required = false;
     input.maxLength = 32;
-    input.placeholder = 'Ex.: 0387';
+    input.placeholder = 'Opcional (ex.: 0387)';
     label.append(input);
-    const button = node('button', 'primary', 'Liberar entrada');
+    const button = node('button', 'primary', '✓ Confirmar e Liberar Entrada');
     button.type = 'submit';
     form.append(label, button);
     form.addEventListener('submit', async (event) => {
@@ -463,8 +585,8 @@ function renderCard(card) {
           method: 'POST', body: {wristband: input.value.trim()},
         });
         renderCard(updated);
-        notice(`${updated.number} liberado. Pulseira ${updated.wristband} vinculada.`, 'success');
-        await refreshCards();
+        notice(`✓ ${updated.number} liberado com sucesso! ${updated.wristband ? `Pulseira ${updated.wristband} vinculada.` : ''}`, 'success');
+        await Promise.allSettled([refreshCards(), refreshScannedCards(), refreshReports()]);
       } catch (error) {
         notice(error.message, 'error');
         button.disabled = false;
@@ -625,11 +747,14 @@ $('logoutButton').addEventListener('click', async () => {
 $('originForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   try {
-    await api('origins', {method: 'POST', body: {name: $('originName').value.trim(), category: $('originCategory').value}});
+    const created = await api('origins', {method: 'POST', body: {name: $('originName').value.trim(), category: $('originCategory').value}});
     event.target.reset();
     originsPage = 1;
     await refreshOrigins();
-    notice('Origem cadastrada.', 'success');
+    notice(`✓ Origem "${created.name}" cadastrada com sucesso! Selecionada para gerar cartões.`, 'success');
+    if (created && created.id) {
+      await selectOriginForIssue(created.id);
+    }
   } catch (error) { notice(error.message, 'error'); }
 });
 $('cardsPrev').addEventListener('click', () => { cardsPage--; refreshCards().catch((error) => notice(error.message, 'error')); });

@@ -246,7 +246,13 @@ class Store:
         if not TOKEN_RE.fullmatch(token):
             raise StoreError("QR inválido")
         with closing(self._connect()) as db:
-            row = db.execute("SELECT * FROM cards WHERE token=?", (token,)).fetchone()
+            row = db.execute(
+                """SELECT cards.*, COALESCE(u.username, cards.redeemed_by) AS redeemed_by_username
+                   FROM cards
+                   LEFT JOIN users u ON u.id = CAST(cards.redeemed_by AS INTEGER)
+                   WHERE cards.token=?""",
+                (token,),
+            ).fetchone()
         if row is None:
             raise StoreError("Cartão não encontrado", 404)
         return self._card(row)
@@ -256,17 +262,20 @@ class Store:
             clauses = []
             params = []
             if origin_id:
-                clauses.append("origin_id = ?")
+                clauses.append("cards.origin_id = ?")
                 params.append(origin_id)
             if status:
-                clauses.append("status = ?")
+                clauses.append("cards.status = ?")
                 params.append(status)
 
             where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
             total = db.execute(f"SELECT COUNT(*) FROM cards {where}", tuple(params)).fetchone()[0]
 
-            order_by = "ORDER BY redeemed_at DESC, id DESC" if status == "redeemed" else "ORDER BY id DESC"
-            query = f"SELECT * FROM cards {where} {order_by} LIMIT ? OFFSET ?"
+            order_by = "ORDER BY cards.redeemed_at DESC, cards.id DESC" if status == "redeemed" else "ORDER BY cards.id DESC"
+            query = f"""SELECT cards.*, COALESCE(u.username, cards.redeemed_by) AS redeemed_by_username
+                        FROM cards
+                        LEFT JOIN users u ON u.id = CAST(cards.redeemed_by AS INTEGER)
+                        {where} {order_by} LIMIT ? OFFSET ?"""
             rows = db.execute(query, tuple(params) + (page_size, (page - 1) * page_size))
             items = [self._card(row) for row in rows]
         return self._page(items, total, page, page_size)
@@ -326,9 +335,9 @@ class Store:
     def redeem(self, token: str, wristband: str, uid: str) -> dict:
         if not TOKEN_RE.fullmatch(token):
             raise StoreError("QR inválido")
-        wristband = wristband.strip()
-        if not 1 <= len(wristband) <= 32:
-            raise StoreError("Informe o número da pulseira (até 32 caracteres)")
+        wristband = (wristband or "").strip()
+        if len(wristband) > 32:
+            raise StoreError("Número da pulseira deve ter até 32 caracteres")
         db = self._connect()
         try:
             db.execute("BEGIN IMMEDIATE")
@@ -344,7 +353,14 @@ class Store:
                    WHERE token=? AND status='issued'""",
                 (utc_now(), uid, wristband, token),
             )
-            result = self._card(db.execute("SELECT * FROM cards WHERE token=?", (token,)).fetchone())
+            result_row = db.execute(
+                """SELECT cards.*, COALESCE(u.username, cards.redeemed_by) AS redeemed_by_username
+                   FROM cards
+                   LEFT JOIN users u ON u.id = CAST(cards.redeemed_by AS INTEGER)
+                   WHERE cards.token=?""",
+                (token,),
+            ).fetchone()
+            result = self._card(result_row)
             db.commit()
             return result
         except Exception:
