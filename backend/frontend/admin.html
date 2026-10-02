@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#0b0b12">
   <meta name="robots" content="noindex,nofollow">
-  <link rel="stylesheet" href="../static/admin.css?v=20261002-v8-bar-module">
+  <link rel="stylesheet" href="../static/admin.css?v=20261002-v10-roles-permission">
   <script src="../static/vendor/jsQR.js" defer></script>
-  <script type="module" src="../static/admin.js?v=20261002-v8-bar-module"></script>
+  <script type="module" src="../static/admin.js?v=20261002-v10-roles-permission"></script>
 </head>
 <body>
   <header class="topbar">
@@ -186,10 +186,27 @@
             <!-- Coluna da Esquerda: Identificação do Cartão e Carrinho / Comanda -->
             <div style="display:flex;flex-direction:column;gap:16px">
               <div class="panel">
-                <h3 style="margin:0 0 10px;font-size:18px">1. Identificar Cartão do Cliente</h3>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+                  <h3 style="margin:0;font-size:18px">1. Identificar Cartão do Cliente</h3>
+                  <button id="barToggleCameraBtn" type="button" class="primary" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;font-size:13px;font-weight:700">
+                    📷 Ler com Câmera
+                  </button>
+                </div>
                 <div style="display:flex;gap:8px">
                   <input id="barCardInput" placeholder="Número (ex.: VIBZ-000001 ou 1) ou escaneie o QR" autocomplete="off" style="flex:1">
-                  <button id="barFindCardBtn" type="button" class="primary">Buscar</button>
+                  <button id="barFindCardBtn" type="button">Buscar</button>
+                </div>
+
+                <!-- Painel da Câmera do Bar -->
+                <div id="barCameraSection" style="margin-top:14px;display:none;background:#13111b;border:1.5px solid #ff7b4b;border-radius:12px;padding:12px;box-shadow:0 6px 20px rgba(255,123,75,0.15)">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                    <span style="font-size:13px;font-weight:700;color:#ff9e73">📹 Aponte a câmera para o QR Code do cartão</span>
+                    <button id="barStopCameraBtn" type="button" class="text-button" style="padding:4px 8px;color:#ff8790;font-size:13px;font-weight:700">✖ Fechar Câmera</button>
+                  </div>
+                  <div class="camera-frame" style="max-height:260px;aspect-ratio:16/9;border-radius:10px;overflow:hidden">
+                    <video id="barCamera" autoplay muted playsinline hidden style="width:100%;height:100%;object-fit:cover"></video>
+                    <div id="barCameraPlaceholder" style="padding:35px 15px;text-align:center;color:#bcb8c4">Câmera desligada</div>
+                  </div>
                 </div>
                 <div id="barCardStatusBox" style="margin-top:12px;padding:12px;background:#1b1926;border-radius:10px;border:1px solid #3d354a;display:none">
                   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -571,7 +588,7 @@
           <label>Usuário<input id="newUsername" required minlength="3" maxlength="40" pattern="[A-Za-z0-9_.-]+" autocomplete="off" placeholder="nome.usuario"></label>
           <label>Senha inicial<input id="newPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password" placeholder="Mínimo 12 caracteres"></label>
           <label>Confirmar senha<input id="confirmPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
-          <label>Permissão<select id="newRole" required><option value="operator">Operador: lê QR e registra entrada</option><option value="admin">Administrador: acesso completo</option></select></label>
+          <label>Permissão<select id="newRole" required><option value="portaria">Portaria: lê QR da portaria (somente portaria)</option><option value="bar">Bar: lê QR do bar e lança consumo (somente bar)</option><option value="admin">Administrador: acesso completo a todos os menus</option></select></label>
           <button type="submit" class="primary">Cadastrar usuário</button>
         </form>
         <p class="hint">A senha é guardada somente como hash. Informe a senha inicial ao novo usuário por um canal privado.</p>

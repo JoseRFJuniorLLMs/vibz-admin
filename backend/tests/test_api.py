@@ -38,7 +38,7 @@ class ApiTests(unittest.TestCase):
         admin_page = self.client.get("/admin/")
         self.assertEqual(admin_page.status_code, 200)
         self.assertEqual(admin_page.headers["cache-control"], "no-store")
-        self.assertIn("admin.js?v=20261002-v8-bar-module", admin_page.text)
+        self.assertIn("admin.js?v=20261002-v10-roles-permission", admin_page.text)
         self.assertEqual(self.client.get("/static/admin.js").headers["cache-control"], "no-store")
 
     def test_login_csrf_roles_and_redeem(self):
@@ -124,6 +124,19 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/users").json()["total"], 3)
         self.assertEqual(self.client.post("/api/users", json=data, headers={"X-CSRF-Token": admin_csrf}).status_code, 409)
         self.assertEqual(self.client.post("/api/login", json={"username": "nova.operadora", "password": data["password"]}).status_code, 200)
+
+        # Criar usuário com papel bar
+        admin_csrf = self.login()
+        bar_data = {"username": "atendente.bar", "password": "A-long-password-789", "role": "bar"}
+        bar_created = self.client.post("/api/users", json=bar_data, headers={"X-CSRF-Token": admin_csrf})
+        self.assertEqual(bar_created.status_code, 201)
+        self.assertEqual(bar_created.json()["role"], "bar")
+
+        # Criar usuário com papel portaria
+        portaria_data = {"username": "atendente.portaria", "password": "A-long-password-789", "role": "portaria"}
+        portaria_created = self.client.post("/api/users", json=portaria_data, headers={"X-CSRF-Token": admin_csrf})
+        self.assertEqual(portaria_created.status_code, 201)
+        self.assertEqual(portaria_created.json()["role"], "portaria")
 
     def test_partner_listing_and_admin_updates(self):
         self.store.seed_partners(entries())

@@ -55,7 +55,7 @@ class LoginInput(BaseModel):
 class NewUserInput(BaseModel):
     username: str = Field(min_length=3, max_length=40)
     password: str = Field(min_length=12, max_length=256)
-    role: Literal["admin", "operator"]
+    role: Literal["admin", "operator", "portaria", "bar"]
 
 
 class OriginInput(BaseModel):

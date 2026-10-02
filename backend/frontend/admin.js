@@ -105,19 +105,68 @@ async function showLoggedIn(data) {
   $('loginPanel').hidden = true;
   $('workspace').hidden = false;
   $('account').hidden = false;
-  $('accountName').textContent = `${data.username} · ${data.role === 'admin' ? 'admin' : 'operador'}`;
-  document.querySelectorAll('.tab.admin-only, form.admin-only').forEach((element) => {
-    element.hidden = data.role !== 'admin';
+
+  const role = (data.role || '').toLowerCase();
+  const username = (data.username || '').toLowerCase();
+  const isAdmin = role === 'admin';
+  const isBar = !isAdmin && (role === 'bar' || username === 'bar');
+  const isPortaria = !isAdmin && !isBar;
+
+  let roleLabel = 'administrador';
+  if (isBar) roleLabel = 'bar';
+  else if (isPortaria) roleLabel = 'portaria';
+
+  $('accountName').textContent = `${data.username} · ${roleLabel}`;
+
+  // 1 - Usuário portaria só pode ler qrcode da portaria, todos os outros menus não aparecem
+  // 2 - Usuário bar só pode ler qrcode de bar, todos os outros menus não aparecem
+  document.querySelectorAll('.tab').forEach((tab) => {
+    const tabName = tab.dataset.tab;
+    if (isAdmin) {
+      tab.hidden = false;
+    } else if (isPortaria) {
+      tab.hidden = (tabName !== 'scan');
+    } else if (isBar) {
+      tab.hidden = (tabName !== 'bar');
+    }
   });
-  $('issueOperatorNote').hidden = data.role === 'admin';
-  switchTab('scan');
-  const loads = await Promise.allSettled([refreshOrigins(), refreshCards(), refreshScannedCards()]);
-  for (const result of loads) {
-    if (result.status === 'rejected') notice(result.reason.message, 'error');
+
+  document.querySelectorAll('form.admin-only, .admin-only').forEach((element) => {
+    if (!element.classList.contains('tab')) {
+      element.hidden = !isAdmin;
+    }
+  });
+
+  $('issueOperatorNote').hidden = isAdmin;
+
+  // Sub-abas do Bar: se não for admin, oculta gestão administrativa de cardápio e clientes
+  if ($('barSubNavMenu')) $('barSubNavMenu').hidden = !isAdmin;
+  if ($('barSubNavClients')) $('barSubNavClients').hidden = !isAdmin;
+
+  if (isBar) {
+    switchTab('bar');
+    initBarModule().catch((error) => notice(error.message, 'error'));
+  } else {
+    switchTab('scan');
+    if (isAdmin) {
+      const loads = await Promise.allSettled([refreshOrigins(), refreshCards(), refreshScannedCards()]);
+      for (const result of loads) {
+        if (result.status === 'rejected') notice(result.reason.message, 'error');
+      }
+    }
   }
 }
 
 function switchTab(name) {
+  const role = (session?.role || '').toLowerCase();
+  const username = (session?.username || '').toLowerCase();
+  const isAdmin = role === 'admin';
+  const isBar = !isAdmin && (role === 'bar' || username === 'bar');
+  const isPortaria = !isAdmin && !isBar;
+
+  if (isPortaria && name !== 'scan') name = 'scan';
+  if (isBar && name !== 'bar') name = 'bar';
+
   if (scannedInterval) {
     clearInterval(scannedInterval);
     scannedInterval = null;
@@ -129,9 +178,10 @@ function switchTab(name) {
     section.hidden = section.id !== `${name}Tab`;
   }
   if (name !== 'scan') stopCamera();
-  if (name === 'issue') refreshOriginChoices().catch((error) => notice(error.message, 'error'));
-  if (name === 'cards') refreshCards().catch((error) => notice(error.message, 'error'));
-  if (name === 'scanned') {
+  if (name !== 'bar') stopBarCamera();
+  if (name === 'issue' && isAdmin) refreshOriginChoices().catch((error) => notice(error.message, 'error'));
+  if (name === 'cards' && isAdmin) refreshCards().catch((error) => notice(error.message, 'error'));
+  if (name === 'scanned' && isAdmin) {
     scannedPage = 1;
     refreshScannedCards().catch((error) => notice(error.message, 'error'));
     scannedInterval = setInterval(() => {
@@ -141,10 +191,10 @@ function switchTab(name) {
     }, 15000);
   }
   if (name === 'bar') initBarModule().catch((error) => notice(error.message, 'error'));
-  if (name === 'reports') refreshReports().catch((error) => notice(error.message, 'error'));
-  if (name === 'origins') refreshOrigins().catch((error) => notice(error.message, 'error'));
-  if (name === 'partners') refreshPartners().catch((error) => notice(error.message, 'error'));
-  if (name === 'users' && session?.role === 'admin') refreshUsers().catch((error) => notice(error.message, 'error'));
+  if (name === 'reports' && isAdmin) refreshReports().catch((error) => notice(error.message, 'error'));
+  if (name === 'origins' && isAdmin) refreshOrigins().catch((error) => notice(error.message, 'error'));
+  if (name === 'partners' && isAdmin) refreshPartners().catch((error) => notice(error.message, 'error'));
+  if (name === 'users' && isAdmin) refreshUsers().catch((error) => notice(error.message, 'error'));
   notice('');
 }
 
@@ -160,9 +210,11 @@ async function refreshUsers() {
   const body = $('usersBody');
   body.replaceChildren();
   for (const user of result.items) {
-    const row = node('tr');
+    let roleTxt = 'Portaria';
+    if (user.role === 'admin') roleTxt = 'Administrador';
+    else if (user.role === 'bar') roleTxt = 'Bar';
     row.append(node('td', '', user.username),
-      node('td', '', user.role === 'admin' ? 'Administrador' : 'Operador'),
+      node('td', '', roleTxt),
       node('td', '', user.active ? 'Ativo' : 'Inativo'),
       node('td', '', formatDate(user.created_at)));
     body.append(row);
@@ -1475,7 +1527,10 @@ $('usersPrev').addEventListener('click', () => { usersPage--; refreshUsers().cat
 $('usersNext').addEventListener('click', () => { usersPage++; refreshUsers().catch((error) => notice(error.message, 'error')); });
 $('startCamera').addEventListener('click', () => startCamera().catch((error) => notice(error.message, 'error')));
 $('stopCamera').addEventListener('click', stopCamera);
-window.addEventListener('pagehide', stopCamera);
+window.addEventListener('pagehide', () => {
+  stopCamera();
+  stopBarCamera();
+});
 
 // =============================================================
 // MÓDULO BAR & CARDÁPIO DE BEBIDAS
@@ -1502,6 +1557,7 @@ async function initBarModule() {
 }
 
 function switchBarSubTab(name) {
+  if (name !== 'pdv') stopBarCamera();
   barSubTab = name;
   const tabs = {
     pdv: $('barPdvView'),
@@ -1777,6 +1833,145 @@ function renderCart() {
   if (totalEl) totalEl.textContent = formatMoney(total);
 }
 
+// -------------------------------------------------------------
+// Leitor de Câmera do Bar (PDV)
+// -------------------------------------------------------------
+let barCameraStream = null;
+let barScanActive = false;
+let barScanBusy = false;
+let barLastFrame = 0;
+
+function stopBarCamera() {
+  barScanActive = false;
+  if (barCameraStream) {
+    try {
+      barCameraStream.getTracks().forEach((track) => track.stop());
+    } catch (_) {}
+  }
+  barCameraStream = null;
+  const vid = $('barCamera');
+  if (vid) {
+    vid.srcObject = null;
+    vid.hidden = true;
+  }
+  const ph = $('barCameraPlaceholder');
+  if (ph) {
+    ph.hidden = false;
+    ph.textContent = 'Câmera desligada';
+  }
+  const sec = $('barCameraSection');
+  if (sec) sec.style.display = 'none';
+  const toggleBtn = $('barToggleCameraBtn');
+  if (toggleBtn) {
+    toggleBtn.innerHTML = '📷 Ler com Câmera';
+    toggleBtn.classList.add('primary');
+  }
+}
+
+async function scanBarFrame(timestamp) {
+  if (!barScanActive) return;
+  requestAnimationFrame(scanBarFrame);
+  if (barScanBusy || timestamp - barLastFrame < 180) return;
+  const video = $('barCamera');
+  if (!video || video.readyState < 2) return;
+
+  barLastFrame = timestamp;
+  barScanBusy = true;
+  try {
+    let value = null;
+    if (detectorSupported) {
+      try {
+        const found = await new BarcodeDetector({formats: ['qr_code']}).detect(video);
+        value = found[0]?.rawValue || null;
+      } catch (_) {
+        detectorSupported = false;
+      }
+    }
+    if (!detectorSupported && window.jsQR) {
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const context = canvas.getContext('2d', {willReadFrequently: true});
+      context.drawImage(video, 0, 0);
+      const image = context.getImageData(0, 0, canvas.width, canvas.height);
+      value = window.jsQR(image.data, image.width, image.height)?.data || null;
+    }
+    if (value && barScanActive) {
+      stopBarCamera();
+      if ($('barCardInput')) $('barCardInput').value = value;
+      await findBarCard(value);
+      playBling();
+    }
+  } catch (error) {
+    notice(error.message, 'error');
+    stopBarCamera();
+  } finally {
+    barScanBusy = false;
+  }
+}
+
+async function startBarCamera() {
+  const placeholder = $('barCameraPlaceholder');
+  const sec = $('barCameraSection');
+  const toggleBtn = $('barToggleCameraBtn');
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    const msg = 'A câmera exige HTTPS e permissão do navegador.';
+    notice(msg, 'error');
+    return;
+  }
+
+  stopBarCamera();
+  if (sec) sec.style.display = 'block';
+  if (placeholder) {
+    placeholder.hidden = false;
+    placeholder.textContent = 'Conectando câmera...';
+  }
+  if (toggleBtn) {
+    toggleBtn.innerHTML = '⏹ Parar Câmera';
+    toggleBtn.classList.remove('primary');
+  }
+
+  try {
+    try {
+      barCameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+    } catch (_) {
+      barCameraStream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: false,
+      });
+    }
+    const video = $('barCamera');
+    video.srcObject = barCameraStream;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('webkit-playsinline', '');
+    video.muted = true;
+    video.hidden = false;
+    if (placeholder) placeholder.hidden = true;
+    await new Promise((resolve) => {
+      if (video.readyState >= 2) resolve();
+      else video.onloadedmetadata = () => resolve();
+    });
+    await video.play();
+    barScanActive = true;
+    requestAnimationFrame(scanBarFrame);
+  } catch (error) {
+    stopBarCamera();
+    notice(`Não foi possível abrir a câmera: ${error.message}`, 'error');
+  }
+}
+
+function toggleBarCamera() {
+  if (barScanActive || barCameraStream) {
+    stopBarCamera();
+  } else {
+    startBarCamera().catch((err) => notice(err.message, 'error'));
+  }
+}
+
 async function findBarCard(val) {
   const raw = (val || $('barCardInput')?.value || '').trim();
   if (!raw) {
@@ -1986,6 +2181,8 @@ $('barSubNavClients')?.addEventListener('click', () => switchBarSubTab('clients'
 $('barSubNavDaily')?.addEventListener('click', () => switchBarSubTab('daily'));
 
 $('barFindCardBtn')?.addEventListener('click', () => findBarCard());
+$('barToggleCameraBtn')?.addEventListener('click', toggleBarCamera);
+$('barStopCameraBtn')?.addEventListener('click', stopBarCamera);
 $('barCardInput')?.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();

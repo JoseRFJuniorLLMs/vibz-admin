@@ -93,7 +93,7 @@ class Store:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT NOT NULL UNIQUE COLLATE NOCASE,
                     password_hash TEXT NOT NULL,
-                    role TEXT NOT NULL CHECK(role IN ('admin', 'operator')),
+                    role TEXT NOT NULL CHECK(role IN ('admin', 'operator', 'portaria', 'bar')),
                     active INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL
                 );
@@ -176,6 +176,34 @@ class Store:
                     "INSERT INTO drinks(name, price, dosage, active, created_at) VALUES (?, ?, ?, 1, ?)",
                     [(name, price, dosage, now) for name, price, dosage in initial_drinks],
                 )
+
+            # Migração de roles na tabela users se necessário
+            user_sql = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
+            if user_sql and "role IN ('admin', 'operator')" in user_sql[0]:
+                db.execute("PRAGMA foreign_keys=OFF")
+                db.execute("DROP TABLE IF EXISTS users_migrated")
+                db.execute("""CREATE TABLE users_migrated (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('admin', 'operator', 'portaria', 'bar')),
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                )""")
+                db.execute("INSERT INTO users_migrated(id, username, password_hash, role, active, created_at) SELECT id, username, password_hash, role, active, created_at FROM users")
+                db.execute("DROP TABLE users")
+                db.execute("ALTER TABLE users_migrated RENAME TO users")
+                db.execute("PRAGMA foreign_keys=ON")
+
+            # Se usuário portaria existir mas bar não existir, cria bar com mesmo hash inicial
+            portaria_user = db.execute("SELECT password_hash FROM users WHERE username='portaria'").fetchone()
+            if portaria_user:
+                bar_count = db.execute("SELECT COUNT(*) FROM users WHERE username='bar'").fetchone()[0]
+                if bar_count == 0:
+                    db.execute(
+                        "INSERT INTO users(username, password_hash, role, active, created_at) VALUES ('bar', ?, 'bar', 1, ?)",
+                        (portaria_user[0], utc_now()),
+                    )
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=20, isolation_level=None)
@@ -446,7 +474,7 @@ class Store:
         username = username.strip().lower()
         if not re.fullmatch(r"[a-z0-9_.-]{3,40}", username):
             raise StoreError("Usuário deve ter 3 a 40 letras, números, pontos ou hífens")
-        if role not in {"admin", "operator"}:
+        if role not in {"admin", "operator", "portaria", "bar"}:
             raise StoreError("Papel inválido")
         try:
             with closing(self._connect()) as db:
@@ -760,12 +788,20 @@ class Store:
         if not raw:
             raise StoreError("Informe o cartão ou escaneie o QR", 400)
         # 1. Se URL
-        if public_base_url and (raw.startswith("http://") or raw.startswith("https://")):
-            try:
-                token = parse_qr(raw, public_base_url)
-                return self.find(token)
-            except Exception:
-                pass
+        if raw.startswith("http://") or raw.startswith("https://"):
+            if public_base_url:
+                try:
+                    token = parse_qr(raw, public_base_url)
+                    return self.find(token)
+                except Exception:
+                    pass
+            clean_path = urlsplit(raw).path.rstrip("/")
+            last_segment = clean_path.split("/")[-1] if clean_path else ""
+            if TOKEN_RE.fullmatch(last_segment):
+                try:
+                    return self.find(last_segment)
+                except Exception:
+                    pass
         # 2. Se token direto
         if TOKEN_RE.fullmatch(raw):
             try:
